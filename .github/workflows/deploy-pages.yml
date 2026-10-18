@@ -1,0 +1,80 @@
+name: Deploy frontend to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: vars.API_BASE_URL != '' && vars.SITE_URL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: read
+    env:
+      VITE_API_BASE_URL: ${{ vars.API_BASE_URL }}
+      VITE_SITE_URL: ${{ vars.SITE_URL }}
+      VITE_BASE_PATH: ${{ vars.BASE_PATH || format('/{0}/', github.event.repository.name) }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Validate public deployment settings
+        run: |
+          node --input-type=module <<'NODE'
+          for (const name of ['VITE_API_BASE_URL', 'VITE_SITE_URL']) {
+            const value = process.env[name];
+            if (!value) throw new Error(`Configure repository variable ${name.replace('VITE_', '')} before deploying.`);
+            const url = new URL(value);
+            if (url.protocol !== 'https:') throw new Error(`${name} must use HTTPS for the public deployment.`);
+          }
+          if (!process.env.VITE_API_BASE_URL.replace(/\/$/, '').endsWith('/api')) {
+            throw new Error('API_BASE_URL must include the /api path.');
+          }
+          const base = process.env.VITE_BASE_PATH;
+          if (!base.startsWith('/') || !base.endsWith('/')) {
+            throw new Error('BASE_PATH must start and end with /.');
+          }
+          NODE
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Check types
+        run: npm run check
+      - name: Run tests
+        run: npm test
+      - name: Build frontend
+        run: npm run build:client
+      - name: Upload frontend
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: client/dist
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+
