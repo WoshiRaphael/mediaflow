@@ -195,3 +195,4 @@ h1,h2,h3 { font-family:'Space Grotesk',sans-serif; }
 @media(max-width:760px) { .dl-field input,.dl-field textarea,.dl-quality-control select { font-size:16px; } }
 .dl-batch-list { grid-template-columns:minmax(0,1fr); }.dl-batch-item { min-width:0; }
 .dl-quality { min-width:0; } @media(max-width:420px) { .dl-result-actions { flex-wrap:wrap; }.dl-quality { flex-basis:100%; }.dl-download { width:100%; } }
+@media(min-width:761px) and (max-width:850px) { .showcase { scale:.64; margin-left:14px; }.hero-top { min-height:345px; } }
