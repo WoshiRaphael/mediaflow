@@ -1,0 +1,33 @@
+# Deploy the API independently; GitHub Pages hosts only the frontend.
+services:
+  - type: web
+    name: mediaflow-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build --workspace server
+    startCommand: npm run start --workspace server
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "8787"
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: ALLOWED_MEDIA_HOSTS
+        value: images.unsplash.com,upload.wikimedia.org,media.w3.org,interactive-examples.mdn.mozilla.net
+      - key: MAX_FILE_BYTES
+        value: "104857600"
+      - key: REQUEST_TIMEOUT_MS
+        value: "20000"
+      - key: MEDIA_TTL_SECONDS
+        value: "900"
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "30"
+      - key: MAX_CONCURRENT_DOWNLOADS
+        value: "4"
+      - key: TRUST_PROXY_HOPS
+        value: "0"
+

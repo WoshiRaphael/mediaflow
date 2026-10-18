@@ -1,0 +1,17 @@
+{
+  "name": "mediaflow",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A beautifully considered, secure direct-media downloader.",
+  "workspaces": ["client", "server"],
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "dev": "concurrently -k -n web,api -c magenta,cyan \"npm run dev -w client\" \"npm run dev -w server\"",
+    "build": "npm run build -w client && npm run build -w server",
+    "build:client": "npm run build -w client",
+    "check": "npm run check -w client && npm run check -w server",
+    "test": "npm run test -w client && npm run test -w server",
+    "start": "npm run start -w server"
+  },
+  "devDependencies": { "concurrently": "^9.2.1" }
+}
