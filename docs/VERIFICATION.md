@@ -47,3 +47,13 @@ Hosted source checks recorded these outcomes:
 Instagram and Pinterest metadata success is not a completed file download. Local Sintel extraction and merging succeeded as recorded above, while the hosted Sintel attempt failed. No cause beyond the reported source error has been established, and this record does not declare every named platform functional in the cloud.
 
 Repeat deployment acceptance checks after relevant source, configuration, runtime, or hosting changes. Source access can differ between a local computer and a hosting IP. Login requirements, DRM, unavailable formats, platform blocks, and removed media must remain explicit failures; no universal all-links guarantee is made.
+
+## User-link diagnostic follow-up — 19 October 2026
+
+The user's [submitted YouTube radio/mix URL](https://www.youtube.com/watch?v=4Oq3umSMYMo&list=RD4Oq3umSMYMo&start_radio=1) and its [clean watch URL](https://www.youtube.com/watch?v=4Oq3umSMYMo) both resolved locally to the same eight quality formats, in 2.339 and 2.532 seconds respectively. These were metadata-only checks; no media file was downloaded.
+
+The hosted runtime API returned HTTP 422 `SOURCE_UNAVAILABLE` for both forms, after 31.471 and 29.889 seconds. Removing radio/mix parameters did not resolve the hosted failure in these checks.
+
+At 22:42 SGT, an operator-only check using the bounded, metadata-only `server/scripts/diagnose-source.mjs` ran against the clean URL in Render's **build environment**. yt-dlp exited with code 1 and reported HTTP 429 Too Many Requests plus YouTube's “Sign in to confirm you’re not a bot” message. Redacted diagnostics recorded `BOT_CHECK_MESSAGE`, `SIGN_IN_MESSAGE`, and `HTTP429`. No authentication, cookies, or access-control bypass was used.
+
+This confirms YouTube rejected that request from the Render build environment. It does not establish the exact underlying response received by the earlier runtime requests. The error-classification update passed the server build and all 51 backend tests with no skips, including four new tests for bot-check precedence, rate limits, ambiguous access denials, and private fallback errors. The unchanged client had 28 passing tests, giving 79 tests across the release. Production retains bounded extractor warnings for classification without logging their raw contents. Bot checks, source rate limits, and ambiguous failures now have distinct messages. This follow-up does not claim restored YouTube access.
