@@ -27,10 +27,18 @@ jobs:
           cache: npm
       - name: Install locked dependencies
         run: npm ci
+      - name: Install real media processing runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+          ffmpeg -version
       - name: Check types
         run: npm run check
       - name: Run tests
         run: npm test
+        env:
+          FFMPEG_PATH: /usr/bin/ffmpeg
+          REQUIRE_FFMPEG_TESTS: 'true'
       - name: Build both workspaces
         run: npm run build
 
