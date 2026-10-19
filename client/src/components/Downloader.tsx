@@ -10,7 +10,7 @@ import {
   type DownloadProgress, type ResolvedMedia,
 } from '../lib/api';
 
-const DEMO_URL = 'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4';
+const DEMO_URL = 'https://archive.org/details/BigBuckBunny_328';
 
 type BatchItem = {
   key: string;
@@ -31,7 +31,7 @@ function isAborted(error: unknown): boolean {
 }
 
 function sourceLabel(platform: string): string {
-  const names: Record<string, string> = { direct: 'Direct file', youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok', facebook: 'Facebook', pinterest: 'Pinterest', reddit: 'Reddit', x: 'X', twitter: 'X' };
+  const names: Record<string, string> = { direct: 'Direct file', youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok', facebook: 'Facebook', pinterest: 'Pinterest', reddit: 'Reddit', x: 'X', twitter: 'X', archiveorg: 'Internet Archive' };
   return names[platform.toLowerCase()] || platform.replace(/[_-]/g, ' ');
 }
 
@@ -55,6 +55,7 @@ function MediaCard({ media, compact = false, onToast }: { media: ResolvedMedia; 
   const format = media.formats.find((item) => item.id === formatId) || media.formats[0];
   const thumbnail = thumbnailUrl(media.thumbnail);
   const percentage = progress.total ? Math.min(100, Math.round(progress.received / progress.total * 100)) : undefined;
+  const isPreparing = status === 'downloading' && progress.received === 0 && media.platform !== 'direct';
 
   useEffect(() => () => downloadController.current?.abort(), []);
 
@@ -100,7 +101,7 @@ function MediaCard({ media, compact = false, onToast }: { media: ResolvedMedia; 
             key={format.id}
             src={mediaUrl(media.id, format.id)}
             poster={thumbnail}
-            controls playsInline preload="metadata"
+            controls playsInline preload={media.platform === 'direct' ? 'metadata' : 'none'}
             aria-label={`Video preview: ${media.title}`}
             onError={() => setPreviewFailed(true)}
           />
@@ -137,14 +138,14 @@ function MediaCard({ media, compact = false, onToast }: { media: ResolvedMedia; 
             whileTap={reducedMotion ? undefined : { scale: 0.97 }}
           >
             {status === 'downloading' ? <LoaderCircle className="dl-spin" size={16} /> : status === 'success' ? <CheckCheck size={16} /> : <ArrowDownToLine size={16} />}
-            {status === 'downloading' ? 'Downloading…' : status === 'success' ? 'Download again' : `Download ${format.extension.toUpperCase()}`}
+            {status === 'downloading' ? isPreparing ? 'Preparing video…' : 'Downloading…' : status === 'success' ? 'Download again' : `Download ${format.extension.toUpperCase()}`}
           </motion.button>
         </div>
         <AnimatePresence initial={false}>
           {status === 'downloading' && (
             <motion.div className="dl-progress" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              <div className="dl-progress-info"><span>{formatBytes(progress.received)}{progress.total ? ` of ${formatBytes(progress.total)}` : ' received'}</span><button type="button" onClick={() => downloadController.current?.abort()}>Cancel <X size={11} /></button></div>
-              <div className={`dl-progress-track${percentage === undefined ? ' is-indeterminate' : ''}`} role="progressbar" aria-label="Downloading media" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage} aria-valuetext={percentage === undefined ? `${formatBytes(progress.received)} received` : `${percentage}%`}>
+              <div className="dl-progress-info"><span>{isPreparing ? 'Preparing your video. Transfer starts when it is ready.' : <>{formatBytes(progress.received)}{progress.total ? ` of ${formatBytes(progress.total)}` : ' received'}</>}</span><button type="button" onClick={() => downloadController.current?.abort()}>Cancel <X size={11} /></button></div>
+              <div className={`dl-progress-track${percentage === undefined ? ' is-indeterminate' : ''}`} role="progressbar" aria-label={isPreparing ? 'Preparing video' : 'Downloading media'} aria-valuemin={0} aria-valuemax={100} aria-valuenow={isPreparing ? undefined : percentage} aria-valuetext={isPreparing ? 'Preparing video before transfer' : percentage === undefined ? `${formatBytes(progress.received)} received` : `${percentage}%`}>
                 <span style={percentage === undefined ? undefined : { width: `${percentage}%` }} />
               </div>
             </motion.div>
@@ -354,7 +355,7 @@ export default function Downloader({ onToast, compact = false }: DownloaderProps
         )}
         {!isBatch && result && !isResolving && (
           <motion.div key={result.id} className="dl-resolved" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            {usingDemo && <div className="dl-demo-caption"><Sparkles size={12} /> Real sample · Public-domain flower video from MDN <a href="https://developer.mozilla.org/en-US/docs/Web/HTML/Element/video" target="_blank" rel="noreferrer" aria-label="About the MDN sample video (opens a new tab)"><ExternalLink size={11} /></a></div>}
+            {usingDemo && <div className="dl-demo-caption"><Sparkles size={12} /><span>Real page sample · Big Buck Bunny — © 2008 Blender Foundation · <a href={DEMO_URL} target="_blank" rel="noreferrer">Internet Archive</a> · <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noreferrer">CC BY 3.0 <ExternalLink size={10} /></a></span></div>}
             <MediaCard media={result} onToast={notify} />
           </motion.div>
         )}

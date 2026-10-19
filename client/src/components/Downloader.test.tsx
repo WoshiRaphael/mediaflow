@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import Downloader from './Downloader';
-import { downloadMedia, resolveMedia, type ResolvedMedia } from '../lib/api';
+import { downloadMedia, resolveMedia, type DownloadProgress, type ResolvedMedia } from '../lib/api';
 
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
@@ -49,6 +49,29 @@ describe('downloader interaction', () => {
     await waitFor(() => expect(downloadMedia).toHaveBeenCalledWith(expect.objectContaining({ platform: 'youtube' }), expect.objectContaining({ id: 'video-1080', hasAudio: false }), expect.any(AbortSignal), expect.any(Function)));
   });
 
+  it('prepares public-page video only on user action and switches to real transfer progress', async () => {
+    resolveMock.mockResolvedValue({ ...sample, platform: 'archiveorg', title: 'Big Buck Bunny' });
+    let report!: (progress: DownloadProgress) => void;
+    let finish!: (filename: string) => void;
+    vi.mocked(downloadMedia).mockImplementation((_, __, ___, onProgress) => {
+      report = onProgress;
+      return new Promise<string>((resolve) => { finish = resolve; });
+    });
+    render(<Downloader />);
+    fireEvent.click(screen.getByRole('button', { name: /Try a sample/ }));
+    const preview = await screen.findByLabelText('Video preview: Big Buck Bunny');
+    expect(preview.getAttribute('preload')).toBe('none');
+    expect(downloadMedia).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Download MP4' }));
+    expect(await screen.findByRole('button', { name: 'Preparing video…' })).toBeTruthy();
+    expect(screen.getByRole('progressbar', { name: 'Preparing video' }).getAttribute('aria-valuenow')).toBeNull();
+    act(() => report({ received: 2048, total: 4096 }));
+    expect(screen.getByRole('button', { name: 'Downloading…' })).toBeTruthy();
+    expect(screen.getByRole('progressbar', { name: 'Downloading media' }).getAttribute('aria-valuenow')).toBe('50');
+    await act(async () => finish('big-buck-bunny.mp4'));
+    expect(screen.getByRole('button', { name: 'Download again' })).toBeTruthy();
+  });
+
   it('guides an empty submission without contacting the media service', async () => {
     render(<Downloader />);
     fireEvent.submit(screen.getByRole('form', { name: 'Media downloader' }));
@@ -86,14 +109,15 @@ describe('downloader interaction', () => {
     expect(resolveMock.mock.calls[1][0]).toBe('https://example.com/flower.mp4');
   });
 
-  it('requests the public-domain sample from the API and exposes only returned quality options', async () => {
-    resolveMock.mockResolvedValue(sample);
+  it('requests a real video-page sample and shows attribution and only returned quality options', async () => {
+    resolveMock.mockResolvedValue({ ...sample, title: 'Big Buck Bunny', platform: 'archiveorg' });
     render(<Downloader />);
     fireEvent.click(screen.getByRole('button', { name: /Try a sample/ }));
-    expect(await screen.findByRole('heading', { name: 'Flower' })).toBeTruthy();
-    expect(resolveMock).toHaveBeenCalledWith('https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4', expect.any(AbortSignal));
+    expect(await screen.findByRole('heading', { name: 'Big Buck Bunny' })).toBeTruthy();
+    expect(resolveMock).toHaveBeenCalledWith('https://archive.org/details/BigBuckBunny_328', expect.any(AbortSignal));
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['Original quality']);
-    expect(screen.getByText(/Real sample · Public-domain/)).toBeTruthy();
+    expect(screen.getByText(/Real page sample · Big Buck Bunny/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: /CC BY 3.0/ }).getAttribute('href')).toBe('https://creativecommons.org/licenses/by/3.0/');
     expect(screen.getByRole('button', { name: 'Download MP4' })).toBeTruthy();
     expect(downloadMedia).not.toHaveBeenCalled();
   });
