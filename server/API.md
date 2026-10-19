@@ -35,27 +35,17 @@ unsupported media, and hosting-IP blocks return specific errors.
 Request:
 
 ```json
-{"url":"https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"}
+{"url":"https://archive.org/details/BigBuckBunny_328"}
 ```
 
-Response example (the ID and metadata are generated from the source):
+This sample is a real video-page URL. Credit: © 2008 Blender Foundation,
+[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), hosted by
+[Internet Archive](https://archive.org/details/BigBuckBunny_328). Preserve its credits.
 
-```json
-{
-  "id":"opaque-32-character-base64url-token",
-  "title":"flower",
-  "platform":"direct",
-  "kind":"video",
-  "formats":[{
-    "id":"original",
-    "label":"Original quality",
-    "extension":"mp4",
-    "mimeType":"video/mp4",
-    "size":1128375
-  }],
-  "expiresAt":"2026-10-18T12:15:00.000Z"
-}
-```
+The response contains `id`, `title`, `platform`, `kind`, `formats`, and `expiresAt`.
+Each format contains its actual `id`, `label`, `extension`, and `mimeType`, with
+retrievable metadata when available. IDs, titles, qualities, lengths, and expiry
+timestamps come from the running resolver; they are not hard-coded sample results.
 
 `kind` is `photo` or `video`. `size` is included only when the source reports its
 full size reliably. Width and height are provided for PNG/GIF when the header
