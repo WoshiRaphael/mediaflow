@@ -149,6 +149,50 @@ test('aggregate source-byte limit stops preparation and removes partial files', 
   } finally { await store.dispose(); }
 });
 
+test('real progressive preparation joins capped sequential ranges with checked DNS on every request', { skip: !available }, async () => {
+  const temporaryRoot = await mkdtemp(join(fixtures, 'range-root-'));
+  const ranges: string[] = [];
+  let lookups = 0;
+  const store = new PreparedMediaStore(config, { lookup: async () => { lookups++; return dns(); }, request: async (_url, _address, _config, range) => {
+    assert.ok(range);
+    ranges.push(range!);
+    const match = /^bytes=(\d+)-(\d+)$/.exec(range!)!;
+    const start = Number(match[1]);
+    const end = Math.min(start + 511, Number(match[2]), combined.length - 1);
+    const part = combined.subarray(start, end + 1);
+    return { statusCode: 206, headers: { 'content-type': 'video/mp4', 'content-length': String(part.length), 'content-range': `bytes ${start}-${end}/${combined.length}` }, body: Readable.from([part]), destroy() { this.body.destroy(); } };
+  } }, temporaryRoot);
+  const record = new MediaRegistry(900).create({ url: 'https://example.org/page', title: 'Ranges', media: { kind: 'video', extension: 'mp4', mimeType: 'video/mp4' } });
+  try {
+    const lease = await store.acquire(record, plans()[0]);
+    assert.deepEqual(await readFile(lease.path), combined);
+    assert.equal(lease.size, combined.length);
+    assert.ok(ranges.length > 1);
+    assert.equal(lookups, ranges.length);
+    lease.release();
+  } finally { await store.dispose(); }
+});
+
+test('overlapping and incomplete source ranges are rejected with partial-file cleanup', async () => {
+  for (const mode of ['overlap', 'incomplete']) {
+    const temporaryRoot = await mkdtemp(join(fixtures, `bad-${mode}-`));
+    let requests = 0;
+    const store = new PreparedMediaStore(config, { lookup: dns, request: async () => {
+      const requestIndex = requests++;
+      const start = 0;
+      const end = mode === 'incomplete' ? 63 : 31;
+      const bytes = Buffer.alloc(32);
+      return { statusCode: 206, headers: { 'content-type': 'video/mp4', 'content-range': `bytes ${start}-${end}/64` }, body: Readable.from([bytes]), destroy() { this.body.destroy(); } };
+    } }, temporaryRoot);
+    const record = new MediaRegistry(900).create({ url: 'https://example.org/page', title: 'Bad range', media: { kind: 'video', extension: 'mp4', mimeType: 'video/mp4' } });
+    try {
+      await assert.rejects(store.acquire(record, plans()[0]), (error: unknown) => error instanceof ApiError && error.code === (mode === 'incomplete' ? 'INCOMPLETE_SOURCE' : 'INVALID_SOURCE_RANGE'));
+      assert.deepEqual(await readdir(temporaryRoot), []);
+      assert.equal(requests, mode === 'incomplete' ? 1 : 2);
+    } finally { await store.dispose(); }
+  }
+});
+
 test('cancelling a preparation removes partial files and closes the source stream', async () => {
   const temporaryRoot = await mkdtemp(join(fixtures, 'abort-root-'));
   const controller = new AbortController();
