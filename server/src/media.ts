@@ -13,6 +13,15 @@ export function detectMedia(bytes: Buffer): MediaType {
   throw new ApiError(422, 'UNSUPPORTED_MEDIA', 'This link does not provide a supported JPG, PNG, WebP, GIF, MP4, or WebM file. Paste the direct file URL, not a webpage.');
 }
 
+/** Internal track validation. Audio-only MP4 is accepted only while preparing
+ * an explicitly paired video plan; it is never exposed as a complete video. */
+export function detectTrackContainer(bytes: Buffer): 'mp4' | 'webm' {
+  if (bytes.length >= 12 && bytes.toString('ascii', 4, 8) === 'ftyp' && /^(isom|iso[2-9]|mp4[12]|avc1|M4[AVB] |dash|MSNV)/.test(bytes.toString('ascii', 8, 12))) return 'mp4';
+  const media = detectMedia(bytes);
+  if (media.kind === 'video') return media.extension as 'mp4' | 'webm';
+  throw new ApiError(422, 'UNSUPPORTED_TRACK', 'The source did not provide a valid MP4 or WebM media track.');
+}
+
 export function validateDeclaredMime(value: string | undefined, media: MediaType): void {
   const declared = value?.split(';')[0].trim().toLowerCase();
   if (declared && ![media.mimeType, 'application/octet-stream', 'binary/octet-stream', ...(media.extension === 'jpg' ? ['image/jpg'] : [])].includes(declared)) {

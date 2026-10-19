@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { ApiError } from './errors.js';
 import type { MediaType } from './media.js';
+import type { ExtractedFormat } from './extractor.js';
 
 export interface MediaRecord {
   id: string;
@@ -9,6 +10,8 @@ export interface MediaRecord {
   media: MediaType;
   size?: number;
   expiresAt: number;
+  platform?: string;
+  formats?: ExtractedFormat[];
 }
 
 /** Bounded, process-local registry. Run one instance or replace this with a

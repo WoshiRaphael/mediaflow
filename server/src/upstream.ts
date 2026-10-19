@@ -12,7 +12,7 @@ export interface UpstreamResponse {
   body: Readable;
   destroy: () => void;
 }
-export type PinnedRequest = (url: URL, address: ResolvedAddress, config: Config, range?: string, signal?: AbortSignal) => Promise<UpstreamResponse>;
+export type PinnedRequest = (url: URL, address: ResolvedAddress, config: Config, range?: string, signal?: AbortSignal, headers?: Record<string, string>) => Promise<UpstreamResponse>;
 export interface TransportDependencies { lookup?: Lookup; request?: PinnedRequest }
 
 /** Release application slots immediately on cancellation, even for OS DNS
@@ -52,10 +52,23 @@ export function pinnedLookup(address: ResolvedAddress): LookupFunction {
   };
 }
 
-export const requestPinned: PinnedRequest = (url, address, config, range, signal) => new Promise((resolve, reject) => {
+function safeSourceHeaders(headers: Record<string, string> = {}): Record<string, string> {
+  const safe: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    const key = name.toLowerCase();
+    if (!['user-agent', 'referer', 'origin'].includes(key) || typeof value !== 'string' || value.length > 2048 || /[\r\n\0]/.test(value)) continue;
+    if (key !== 'user-agent') {
+      try { const url = new URL(value); if (url.protocol !== 'https:' || url.username || url.password) continue; } catch { continue; }
+    }
+    safe[key] = value;
+  }
+  return safe;
+}
+
+export const requestPinned: PinnedRequest = (url, address, config, range, signal, headers) => new Promise((resolve, reject) => {
   const request = https.request(url, {
     method: 'GET', agent: false, family: address.family, signal,
-    headers: { Accept: 'image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,application/octet-stream;q=0.5', 'Accept-Encoding': 'identity', 'User-Agent': 'MediaFlow/1.0 (authorized-media-download)', ...(range ? { Range: range } : {}) },
+    headers: { accept: 'image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,audio/mp4,audio/webm,application/octet-stream;q=0.5', 'accept-encoding': 'identity', 'user-agent': 'MediaFlow/1.0 (authorized-media-download)', ...safeSourceHeaders(headers), ...(range ? { range } : {}) },
     // Pin the already validated address while retaining the original hostname for
     // TLS certificate verification and SNI. No second DNS lookup can occur.
     lookup: pinnedLookup(address),
@@ -73,7 +86,7 @@ export const requestPinned: PinnedRequest = (url, address, config, range, signal
   request.end();
 });
 
-export async function openMedia(input: string, config: Config, range?: string, dependencies: TransportDependencies = {}, signal?: AbortSignal): Promise<{ response: UpstreamResponse; url: URL }> {
+export async function openMedia(input: string, config: Config, range?: string, dependencies: TransportDependencies = {}, signal?: AbortSignal, headers?: Record<string, string>): Promise<{ response: UpstreamResponse; url: URL }> {
   signal?.throwIfAborted();
   let url = validateUrl(input, config);
   for (let redirects = 0; redirects <= 3; redirects++) {
@@ -83,7 +96,7 @@ export async function openMedia(input: string, config: Config, range?: string, d
       new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new ApiError(504, 'SOURCE_TIMEOUT', 'The source took too long to resolve. Please retry.')), config.requestTimeoutMs); }),
     ]), signal).finally(() => { if (timer) clearTimeout(timer); });
     signal?.throwIfAborted();
-    const response = await withAbort((dependencies.request ?? requestPinned)(url, address, config, range, signal), signal, late => late.destroy());
+    const response = await withAbort((dependencies.request ?? requestPinned)(url, address, config, range, signal, safeSourceHeaders(headers)), signal, late => late.destroy());
     if (signal) {
       const cancel = () => response.destroy();
       signal.addEventListener('abort', cancel, { once: true });

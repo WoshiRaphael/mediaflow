@@ -7,13 +7,13 @@ import { findPlatform } from './platforms.js';
 export type ResolvedAddress = { address: string; family: 4 | 6 };
 export type Lookup = (hostname: string) => Promise<ResolvedAddress[]>;
 
-export function validateUrl(input: string, config: Pick<Config, 'allowedHosts'>): URL {
+export function validateUrl(input: string, config: Pick<Config, 'allowedHosts'> & Partial<Pick<Config, 'allowPublicMedia'>>): URL {
   let url: URL;
   try { url = new URL(input); } catch { throw new ApiError(400, 'INVALID_URL', 'Enter a complete HTTPS media URL.'); }
-  if (input.length > 4096 || url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) {
+  if (input.length > 16384 || url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) {
     throw new ApiError(400, 'INVALID_URL', 'Use an HTTPS link without credentials or a custom port.');
   }
-  if (!config.allowedHosts.has(url.hostname)) {
+  if (!config.allowPublicMedia && !config.allowedHosts.has(url.hostname)) {
     const platform = findPlatform(url.hostname);
     if (platform) throw new ApiError(422, 'PLATFORM_RESTRICTED', `${platform.name}: ${platform.description}`);
     throw new ApiError(422, 'HOST_NOT_ALLOWED', 'This source is not enabled. Use a direct media link from a supported source.');

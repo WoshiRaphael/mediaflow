@@ -3,7 +3,8 @@ import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 
 const config = loadConfig();
-const server = createServer(createApp(config));
+const app = createApp(config);
+const server = createServer(app);
 server.requestTimeout = 30000;
 server.headersTimeout = 10000;
 server.keepAliveTimeout = 5000;
@@ -12,8 +13,14 @@ let closing = false;
 function shutdown() {
   if (closing) return;
   closing = true;
-  server.close(() => process.exit(0));
-  setTimeout(() => { server.closeAllConnections(); process.exit(1); }, 10000).unref();
+  // Stop preparation jobs immediately and remove private cached files while
+  // HTTP connections drain. Closing sockets also cancels pending extraction.
+  const cleanup: Promise<void> = app.locals.dispose();
+  const deadline = setTimeout(() => {
+    server.closeAllConnections();
+    void cleanup.then(() => process.exit(1), () => process.exit(1));
+  }, 10000).unref();
+  server.close(() => { void cleanup.then(() => { clearTimeout(deadline); process.exit(0); }, () => { clearTimeout(deadline); process.exit(1); }); });
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

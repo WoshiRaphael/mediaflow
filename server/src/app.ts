@@ -9,8 +9,9 @@ import { ApiError, publicError } from './errors.js';
 import { detectMedia, filename, validateDeclaredMime } from './media.js';
 import { platformModules } from './platforms.js';
 import { parseByteRange } from './security.js';
-import { createMediaService } from './service.js';
+import { createMediaService, type MediaServiceDependencies } from './service.js';
 import { checkDeclaredSize, type TransportDependencies } from './upstream.js';
+import { createReadStream, preparedRange } from './prepared.js';
 
 const urlSchema = z.string().trim().min(1).max(4096);
 const resolveSchema = z.object({ url: urlSchema }).strict();
@@ -26,9 +27,10 @@ function clientCancellation(res: express.Response, timeoutMs: number) {
   return { signal: controller.signal, dispose: () => res.off('close', cancel) };
 }
 
-export function createApp(config: Config, dependencies: TransportDependencies = {}) {
+export function createApp(config: Config, dependencies: MediaServiceDependencies = {}) {
   const app = express();
   const service = createMediaService(config, dependencies);
+  app.locals.dispose = () => service.dispose();
   let activeDownloads = 0;
   let activeResolves = 0;
   app.disable('x-powered-by');
@@ -46,8 +48,8 @@ export function createApp(config: Config, dependencies: TransportDependencies = 
   app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
   app.get('/api/health', (_req, res) => res.json({ status: 'ok', service: 'mediaflow', version: '1.0.0' }));
   app.get('/api/platforms', (_req, res) => res.json({
-    direct: { id: 'direct', name: 'Direct media', status: 'available', hosts: [...config.allowedHosts], formats: ['mp4', 'webm', 'jpg', 'png', 'webp', 'gif'], maxFileBytes: config.maxFileBytes },
-    platforms: platformModules,
+    direct: { id: 'direct', name: 'Direct media', status: 'available', publicHosts: config.allowPublicMedia, hosts: [...config.allowedHosts], formats: ['mp4', 'webm', 'jpg', 'png', 'webp', 'gif'], maxFileBytes: config.maxFileBytes },
+    platforms: platformModules.map(platform => ({ ...platform, status: config.extractorEnabled ? 'available' : 'disabled' })),
   }));
   const limiter = rateLimit({
     windowMs: 60000, limit: config.rateLimit, standardHeaders: 'draft-7', legacyHeaders: false,
@@ -62,7 +64,7 @@ export function createApp(config: Config, dependencies: TransportDependencies = 
   app.post('/api/resolve', limiter, asyncRoute(async (req, res) => {
     const input = resolveSchema.safeParse(req.body);
     if (!input.success) throw new ApiError(400, 'INVALID_INPUT', 'Provide one media URL.');
-    const cancellation = clientCancellation(res, config.requestTimeoutMs);
+    const cancellation = clientCancellation(res, Math.max(75000, config.extractionTimeoutMs + 10000));
     try {
       const media = await limitedResolve(input.data.url, cancellation.signal);
       cancellation.signal.throwIfAborted();
@@ -73,7 +75,7 @@ export function createApp(config: Config, dependencies: TransportDependencies = 
     const input = batchSchema.safeParse(req.body);
     if (!input.success) throw new ApiError(400, 'INVALID_INPUT', 'Provide between one and five media URLs.');
     // Resolve sequentially so a batch cannot multiply connection concurrency.
-    const cancellation = clientCancellation(res, config.requestTimeoutMs);
+    const cancellation = clientCancellation(res, Math.max(75000, config.extractionTimeoutMs + 10000) * input.data.urls.length);
     try {
       const results = [];
       for (const url of [...new Set(input.data.urls)]) {
@@ -88,20 +90,44 @@ export function createApp(config: Config, dependencies: TransportDependencies = 
     } finally { cancellation.dispose(); }
   }));
   app.get('/api/media/:id', limiter, asyncRoute(async (req, res) => {
-    if (req.query.format !== undefined && req.query.format !== 'original') throw new ApiError(400, 'INVALID_FORMAT', 'Only the source’s original format is available.');
+    if (req.query.format !== undefined && typeof req.query.format !== 'string') throw new ApiError(400, 'INVALID_FORMAT', 'Choose a valid media format.');
     if (req.query.disposition !== undefined && !['inline', 'attachment'].includes(String(req.query.disposition))) throw new ApiError(400, 'INVALID_INPUT', 'Choose inline or attachment.');
     const record = service.registry.get(req.params.id);
+    const formatId = typeof req.query.format === 'string' ? req.query.format : record.formats?.[0]?.id ?? 'original';
+    if (!record.formats && formatId !== 'original') throw new ApiError(400, 'INVALID_FORMAT', 'Only the source’s original format is available.');
     const range = parseByteRange(req.headers.range, record.size);
     if (activeDownloads >= config.maxConcurrentDownloads) throw new ApiError(503, 'SERVER_BUSY', 'All download slots are in use. Please try again in a moment.');
     activeDownloads++;
     let response: Awaited<ReturnType<typeof service.open>>['response'] | undefined;
     const aborted = new AbortController();
-    const cancel = () => { aborted.abort(); response?.destroy(); };
+    let localStream: ReturnType<typeof createReadStream> | undefined;
+    const cancel = () => { aborted.abort(); response?.destroy(); localStream?.destroy(); };
     res.once('close', cancel);
     // Bound stalled downstream clients as well as slow upstream servers, so a
     // client that stops reading cannot retain a global transfer slot forever.
-    res.setTimeout(config.requestTimeoutMs, () => res.destroy());
+    res.setTimeout(Math.max(120000, config.downloadTimeoutMs), () => res.destroy());
     try {
+      if (record.formats) {
+        const lease = await service.prepare(record, formatId, aborted.signal);
+        try {
+          if (res.destroyed) return;
+          aborted.signal.throwIfAborted();
+          const bounds = preparedRange(parseByteRange(req.headers.range, lease.size), lease.size);
+          res.status(bounds.partial ? 206 : 200);
+          res.setHeader('Content-Type', lease.mimeType);
+          res.setHeader('Content-Disposition', `${req.query.disposition === 'inline' ? 'inline' : 'attachment'}; filename="${filename(record.title, lease.extension)}"`);
+          res.setHeader('Accept-Ranges', 'bytes');
+          res.setHeader('Content-Length', bounds.end - bounds.start + 1);
+          if (bounds.partial) res.setHeader('Content-Range', `bytes ${bounds.start}-${bounds.end}/${lease.size}`);
+          localStream = createReadStream(lease.path, { start: bounds.start, end: bounds.end });
+          for await (const chunk of localStream) {
+            if (res.destroyed) break;
+            if (!res.write(chunk)) await once(res, 'drain', { signal: aborted.signal });
+          }
+          if (!res.destroyed) res.end();
+        } finally { localStream?.destroy(); lease.release(); }
+        return;
+      }
       const opened = await service.open(record.url, range, aborted.signal);
       response = opened.response;
       if (res.destroyed) { response.destroy(); return; }
