@@ -195,6 +195,9 @@ function checkRuntime(label, executable, arguments_, required) {
   }
   const explanation = result.error?.message || `exited with status ${result.status ?? 'unknown'}`;
   console.warn(`[media-tools] ${label}: unavailable (${explanation}).`);
+  if (label === 'Python' && result.error?.code === 'ETIMEDOUT') {
+    console.warn('[media-tools] Use the actual Python interpreter path rather than a PATH shim. Render Node deployments can set PYTHON_PATH=/usr/bin/python3.');
+  }
   if (required) throw new Error(`${label} is required for --check-runtime. Set its executable path or install the runtime.`);
   return false;
 }
