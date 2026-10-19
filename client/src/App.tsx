@@ -126,7 +126,7 @@ function SourcesPage() {
     <p>Available quality choices come from the source. Separate video and audio tracks are joined when needed without re-encoding, while direct files are transferred unchanged. There is no upscaling or watermark removal. Browser codec support varies, so a file may download successfully even when its preview cannot play.</p>
     <p>The standard downloader limits each file to 100 MiB and each batch to five links. Page checks can take about a minute; preparing a video can take longer. Preview and download links normally expire after 15 minutes. Rate, storage, and concurrency limits also apply, and the hosting operator may configure stricter limits.</p>
     <h2>Try a real sample</h2>
-    <p>The sample button uses MDN’s public CC0 flower video. It follows the real preview and download path, so you can check the service without searching for a link.</p>
+    <p>The sample resolves the <a href="https://archive.org/details/BigBuckBunny_328" target="_blank" rel="noreferrer">Big Buck Bunny page on Internet Archive</a>, then offers the video formats found there. Big Buck Bunny is © 2008, Blender Foundation, released under <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noreferrer">Creative Commons Attribution 3.0</a>. MediaFlow makes no creative edits to the film; the selected source determines its file quality. Press Play or Download to start preparing the video.</p>
     <ScrollButton id="downloader" className="primary-button">Open the downloader <ArrowUpRight size={16}/></ScrollButton>
   </article>;
 }
