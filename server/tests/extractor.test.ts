@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 import { connect, createServer } from 'node:net';
 import { once } from 'node:events';
 import { createExtractorEgress, extractorEnvironment } from '../src/egress.js';
-import { parseExtractedVideo } from '../src/extractor.js';
+import { cancelExtractions, extractVideoPage, parseExtractedVideo } from '../src/extractor.js';
+import { loadConfig } from '../src/config.js';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const url = 'https://www.youtube.com/watch?v=example';
 const base = { title: 'A public test video', extractor_key: 'Youtube', duration: 5 };
@@ -41,15 +45,39 @@ test('progressive files without codec metadata remain eligible for local stream 
   assert.equal(parsed.formats.length, 1);
   assert.equal(parsed.formats[0].needsMerge, undefined);
   assert.equal(parsed.formats[0].videoCodec, undefined);
+  assert.equal(parsed.formats[0].hasAudio, undefined);
+  assert.doesNotMatch(parsed.formats[0].label, /video \+ audio|video only/);
   assert.equal(parsed.formats[0].sources.length, 1);
 });
 
-test('protected videos, live streams, playlists, oversized and silent sources are rejected', () => {
+test('protected videos, live streams, playlists and oversized sources are rejected', () => {
   for (const extra of [{ has_drm: true }, { is_live: true }, { availability: 'private' }, { _type: 'playlist', entries: [] }]) {
     assert.throws(() => parseExtractedVideo({ ...base, formats: [combined], ...extra }, url, 10000));
   }
-  assert.throws(() => parseExtractedVideo({ ...base, formats: [{ ...combined, acodec: 'none' }] }, url, 10000));
   assert.throws(() => parseExtractedVideo({ ...base, formats: [combined] }, url, 10));
+});
+
+test('explicitly silent videos remain available with truthful video-only metadata', () => {
+  const parsed = parseExtractedVideo({ ...base, formats: [{ ...combined, acodec: 'none' }] }, url, 10000);
+  assert.equal(parsed.formats.length, 1);
+  assert.equal(parsed.formats[0].hasAudio, false);
+  assert.equal(parsed.formats[0].audioCodec, 'none');
+  assert.match(parsed.formats[0].label, /video only/);
+  assert.equal(parsed.formats[0].sources.length, 1);
+  assert.equal(parsed.formats[0].needsMerge, undefined);
+});
+
+test('available compatible audio is joined and complete formats outrank silent copies at the same height', () => {
+  const silent = { ...combined, acodec: 'none', tbr: 9999 };
+  const preferred = parseExtractedVideo({ ...base, formats: [silent, { ...combined, tbr: 1 }] }, url, 10000);
+  assert.equal(preferred.formats[0].hasAudio, true);
+  assert.equal(preferred.formats[0].sources.length, 1);
+  const merged = parseExtractedVideo({ ...base, formats: [silent,
+    { format_id: 'audio', url: 'https://cdn.example.org/audio.m4a', ext: 'm4a', protocol: 'https', vcodec: 'none', acodec: 'mp4a.40.2', abr: 128, filesize: 300 },
+  ] }, url, 10000);
+  assert.equal(merged.formats[0].hasAudio, true);
+  assert.equal(merged.formats[0].sources.length, 2);
+  assert.equal(merged.formats[0].needsMerge, true);
 });
 
 test('extractor process never inherits proxy bypasses or account credentials', () => {
@@ -123,4 +151,29 @@ test('cancelled proxy DNS lookup cannot create a late connection', async () => {
   controller.abort(); release([{ address: '8.8.8.8', family: 4 }]);
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(connected, false); socket.destroy(); egress.close();
+});
+
+test('shutdown cancellation stops a real active extractor process and waits for cleanup', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mediaflow-shutdown-test-'));
+  const script = join(directory, 'worker.mjs');
+  const marker = join(directory, 'started.json');
+  await writeFile(script, 'import fs from "node:fs"; fs.writeFileSync(new URL("./started.json", import.meta.url), JSON.stringify({pid:process.pid})); setInterval(()=>{},1000);');
+  const config = loadConfig({ PYTHON_PATH: process.execPath, EXTRACTOR_PATH: script, DENO_PATH: script });
+  const pending = extractVideoPage('https://example.org/watch', config).then(() => undefined, error => error);
+  try {
+    let pid: number | undefined;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { pid = JSON.parse(await readFile(marker, 'utf8')).pid; break; } catch { await new Promise(resolve => setTimeout(resolve, 20)); }
+    }
+    assert.ok(pid, 'the real subprocess must have started');
+    await cancelExtractions();
+    const error = await pending;
+    assert.equal(error?.name, 'AbortError');
+    let alive = true;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { process.kill(pid!, 0); } catch { alive = false; break; }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(alive, false, 'shutdown must terminate the extractor process');
+  } finally { await cancelExtractions(); await rm(directory, { recursive: true, force: true }); }
 });

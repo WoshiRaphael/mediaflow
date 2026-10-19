@@ -50,6 +50,12 @@ test('offline ffmpeg restricts every input and requires actual video and audio s
   assert.ok(args.includes('1:a:0'));
   assert.ok(args.includes('+faststart'));
   assert.ok(!args.some(arg => arg.includes('http')));
+  const silent = offlineFfmpegArgs([{ path: '/private/video', container: 'mp4' }], undefined, undefined, false);
+  assert.ok(silent.includes('0:v:0'));
+  assert.ok(silent.includes('-an'));
+  assert.ok(!silent.includes('0:a:0'));
+  const unknown = offlineFfmpegArgs([{ path: '/private/video', container: 'mp4' }], undefined, undefined, undefined);
+  assert.ok(unknown.includes('0:a:0?'));
 });
 
 test('prepared local byte ranges clamp endpoints and support suffix ranges', () => {
@@ -59,11 +65,13 @@ test('prepared local byte ranges clamp endpoints and support suffix ranges', () 
 });
 
 test('public page resolution preserves available plans without leaking source URLs', async () => {
-  const service = createMediaService(config, { extract: async () => ({ title: 'Actual page video', platform: 'youtube', formats: plans() }) });
+  const service = createMediaService(config, { extract: async () => ({ title: 'Actual page video', platform: 'youtube', formats: [...plans(), { ...plans()[0], id: 'silent', hasAudio: false, label: 'Video only', audioCodec: 'none' }, { ...plans()[0], id: 'unknown', hasAudio: undefined, label: 'Source quality' }] }) });
   try {
     const result = await service.resolve('https://youtube.com/watch?v=example');
     assert.equal(result.kind, 'video');
-    assert.deepEqual(result.formats.map(format => format.id), ['progressive', 'merged']);
+    assert.deepEqual(result.formats.map(format => format.id), ['progressive', 'merged', 'silent', 'unknown']);
+    assert.equal(result.formats.find(format => format.id === 'silent')!.hasAudio, false);
+    assert.equal(result.formats.find(format => format.id === 'unknown')!.hasAudio, undefined);
     assert.ok(result.formats.every(format => !('sources' in format)));
     assert.throws(() => service.prepare(service.registry.get(result.id), '--exec attacker'));
   } finally { await service.dispose(); }
@@ -104,6 +112,23 @@ test('real ffmpeg rejects a claimed progressive video that lacks audio and remov
   try {
     await assert.rejects(store.acquire(record, plan), (error: unknown) => error instanceof ApiError && error.code === 'PROCESSING_FAILED');
     assert.deepEqual(await readdir(temporaryRoot), []);
+  } finally { await store.dispose(); }
+});
+
+test('real silent and unknown progressive sources retain original video bytes without requiring an absent audio track', { skip: !available }, async () => {
+  const temporaryRoot = await mkdtemp(join(fixtures, 'silent-root-'));
+  const store = new PreparedMediaStore(config, { lookup: dns, request: sourceTransport() }, temporaryRoot);
+  const registry = new MediaRegistry(900);
+  const record = registry.create({ url: 'https://example.org/page', title: 'Silent source', media: { kind: 'video', extension: 'mp4', mimeType: 'video/mp4' } });
+  try {
+    for (const audio of [false, undefined]) {
+      const plan: ExtractedFormat = { ...plans()[0], id: audio === false ? 'silent' : 'unknown', hasAudio: audio, sources: [{ url: 'https://cdn.example.org/video.mp4' }] };
+      const lease = await store.acquire(record, plan);
+      assert.deepEqual(await readFile(lease.path), video);
+      lease.release();
+    }
+    const invalid: ExtractedFormat = { ...plans()[1], id: 'invalid-silent-pair', hasAudio: false };
+    await assert.rejects(store.acquire(record, invalid), (error: unknown) => error instanceof ApiError && error.code === 'INVALID_PLAN');
   } finally { await store.dispose(); }
 });
 
