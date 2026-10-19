@@ -38,12 +38,24 @@ The equivalent manual service settings are:
 | --- | --- |
 | Runtime | Node |
 | Root directory | Repository root; leave blank |
-| Build command | `npm ci --include=dev && npm run build --workspace server` |
+| Build command | `npm ci --include=dev && npm run setup:media --workspace server -- --check-runtime && npm run build --workspace server` |
 | Start command | `npm run start --workspace server` |
 | Health check | `/api/health` |
 | Node | 22 |
 
 Keep the repo root so npm can use the shared workspaces and lockfile. The server must listen on the hosting provider's `PORT`; the blueprint configures `8787`. Confirm a successful health response at `https://YOUR-API.onrender.com/api/health` and then test an authorized sample through the frontend.
+
+### Media runtimes
+
+Render's native runtimes include Python 3, FFmpeg, and FFprobe during build and runtime, so the Node service can run the media workflow without a Docker migration. The setup command installs pinned yt-dlp and Deno releases into `server/.bin` and checks every required runtime before allowing the build to proceed. [Render's native runtime documentation](https://render.com/docs/native-runtimes) lists the included tools.
+
+The Render blueprint sets `PYTHON_PATH=/usr/bin/python3` to select Debian's installed interpreter directly instead of relying on a language-manager shim found through PATH. Debian Bookworm's [python3-minimal file list](https://packages.debian.org/bookworm/amd64/python3-minimal/filelist) includes that executable. The strict setup check confirms it actually runs in the deployment environment. Local development can use its own absolute Python path.
+
+The tracked `server/.tools-version.json` records official release URLs and SHA-256 checksums. The installer verifies the complete yt-dlp artifact, the Deno ZIP archive, and the extracted Deno executable before installation or execution. Matching local files are reused; binaries are excluded from Git. No pip globals, runtime self-update, downloaded installer shell script, or remote EJS components are used.
+
+The API uses Deno for bundled EJS code with default-denied network, file, and environment access. It does not fall back to Node for challenge execution. Keep the guarded extractor proxy enabled: the extractor's own page/API/manifest requests must pass its public-address DNS validation. Node downloads the selected direct media tracks, then FFmpeg verifies or combines local files with remote protocols disabled. These are separate stages; never replace them with an unrestricted yt-dlp or FFmpeg download subprocess.
+
+The pinned extractor and Deno runtime are external dependencies with their own licenses. When a source changes, deliberately update the manifest, verify the official checksums, rerun the relevant tests, and redeploy. A pinned extractor can become incompatible with an upstream website; that is a maintenance event, not a reason to enable credential, DRM, or access-control bypasses.
 
 ### API environment
 
@@ -52,7 +64,15 @@ Keep the repo root so npm can use the shared workspaces and lockfile. The server
 | `NODE_ENV` | `production` | Production runtime mode |
 | `PORT` | `8787` | Service listener |
 | `ALLOWED_ORIGINS` | Your exact frontend origin | Browser CORS policy |
-| `ALLOWED_MEDIA_HOSTS` | Explicit sample host list in `render.yaml` | Exact outbound hostname policy |
+| `ALLOW_PUBLIC_MEDIA` | `true` | Permit validated direct media on public HTTPS hosts |
+| `ALLOWED_MEDIA_HOSTS` | Explicit sample host list in `render.yaml` | Exact host policy when public-media mode is disabled |
+| `EXTRACTOR_ENABLED` | `true` | Enable public video-page resolution |
+| `EXTRACTOR_PATH` | Derived `server/.bin/yt-dlp` | Pinned extractor artifact; override only with a trusted tool |
+| `PYTHON_PATH` | `/usr/bin/python3` on Render | Direct system Python executable for the extractor |
+| `DENO_PATH` | Adjacent to extractor | Deno executable for restricted challenge code |
+| `FFMPEG_PATH` | `ffmpeg` | Local verification and audio/video muxing executable |
+| `EXTRACTION_TIMEOUT_MS` | `65000` | Video-page extraction deadline |
+| `DOWNLOAD_TIMEOUT_MS` | `120000` | Track preparation deadline |
 | `MAX_FILE_BYTES` | `104857600` | 100 MiB upper file limit |
 | `REQUEST_TIMEOUT_MS` | `20000` | Upstream request deadline |
 | `MEDIA_TTL_SECONDS` | `900` | Expiry for resolved media IDs |
@@ -62,7 +82,7 @@ Keep the repo root so npm can use the shared workspaces and lockfile. The server
 
 Start with proxy trust disabled. If the host puts your app behind exactly one trusted reverse proxy and cannot be reached through a shorter untrusted path, set `TRUST_PROXY_HOPS=1` after verifying the network topology. An incorrect trust setting lets callers spoof addresses used by the rate limiter. With proxy trust disabled behind a proxy, clients may share one limit; resolve that operational issue before launch.
 
-Add a new media hostname only after checking its content, terms, redirect destinations, and ownership. Entries are exact hostnames, such as `media.your-domain.com`, without a scheme, path, port, or wildcard. Redirect targets require approval separately. Do not create an allow-all policy.
+Public-media mode keeps public-IP, redirect, signature, size, timeout, and response-header checks enabled; it does not turn the API into a general response proxy. Set `ALLOW_PUBLIC_MEDIA=false` for an installation that must accept only an exact list of hosts. In that mode, entries such as `media.your-domain.com` contain no scheme, path, port, or wildcard, and redirected/selected media hosts need separate inclusion. This can limit page extraction as well as direct media. `EXTRACTOR_ENABLED=false` disables page resolution entirely.
 
 ## 3. Configure GitHub Pages
 
@@ -80,7 +100,7 @@ In **Settings → Pages → Build and deployment**, select **GitHub Actions** as
 
 The workflow uses the current Node 24 action runtime releases: `setup-node@v6`, `configure-pages@v6`, `upload-pages-artifact@v5`, and `deploy-pages@v5`. The application itself still builds and runs on Node 22. GitHub retired the Node 20 action runtime in September 2026, so older examples may show obsolete action versions. See the [GitHub runtime announcement](https://github.blog/changelog/2026-09-23-node-20-is-no-longer-available-in-github-actions/), [configure-pages release](https://github.com/actions/configure-pages/releases/tag/v6.0.0), [upload-pages-artifact release](https://github.com/actions/upload-pages-artifact/releases/tag/v5.0.0), and [deploy-pages release](https://github.com/actions/deploy-pages/releases/tag/v5.0.1).
 
-The first push may show a failed Pages run before you have supplied the variables or enabled Pages. Set those values and rerun the workflow. Review the CI and Pages deployment results before announcing the site.
+The Pages build is skipped until `API_BASE_URL` and `SITE_URL` exist. Configure both values and enable Pages, then rerun the workflow. CI runs independently. Review both CI and the actual Pages deployment result before announcing the site.
 
 React uses a hash router, so `/#/privacy` and `/#/terms` reload correctly on static hosting. `VITE_BASE_PATH` controls asset paths, not the hash route. Changing a Vite variable requires a new build/deployment.
 
@@ -100,11 +120,12 @@ Rerun the Pages workflow. Enforce HTTPS after certificate provisioning finishes.
 
 ## Operations and limits
 
-- The default media registry and limiter are in memory. Run one API instance. A restart invalidates previously resolved IDs; the interface must resolve the URL again. Use a shared TTL store and shared rate limiting before horizontal scaling.
+- The default media registry, preparation cache, and limiter are process-local. Run one API instance. A restart invalidates previously resolved IDs; the interface must resolve again. Use shared state, coordinated temporary storage, and shared rate limiting before horizontal scaling.
 - The default API is anonymous. CORS is a browser policy, not authentication. For a larger public deployment, put network rate limits, abuse monitoring, and usage controls in front of it. Keep the application's own restrictions enabled.
-- Media is fetched from the upstream provider for preview and save, so one user's workflow can consume multiple transfers. Budget bandwidth and provider quota accordingly. No persistent media library is maintained by this application.
+- Direct media may be fetched separately for preview and save. Page-video results are prepared into temporary files and reused during their expiry window. Budget bandwidth, source quota, and temporary disk space accordingly. No permanent media library is maintained.
+- Preparation is limited to two concurrent jobs with a disk budget derived from the configured file cap; active inputs and muxed output also need transient space. Ensure the host has room for the runtime binaries plus temporary tracks. Abandoned jobs are cancelled, and expired prepared files are removed. Use a deployment-level ephemeral-storage cleanup strategy for unclean process termination.
 - The browser buffers a permitted file for the save action and independently caps it at 100 MiB. Keep the server cap at or below that limit; reduce it for constrained devices and test real mobile browsers. A successful browser handoff cannot prove that the user saved to disk.
-- The original source controls format, resolution, response time, and continued availability. Source expiry, removal, anti-hotlink rules, and provider errors can stop a previously valid URL. MediaFlow does not bypass these controls.
+- The source controls format, resolution, response time, and availability. Login, DRM, geographic rules, bot checks, hosting-IP blocks, expiry, removal, and anti-hotlink rules can stop a URL. A platform being recognized by the extractor is not a guarantee that every public link will download from a cloud host. MediaFlow does not bypass these controls.
 - Logs, metrics, support details, retention policies, and legal operator information depend on your hosting arrangement. Complete those for your deployment and keep the public legal pages consistent with actual practices.
 - Request policies and a passing test suite are defense in depth. Review egress restrictions and dependency updates as part of normal security operations. The API must remain a restricted downloader, never an unrestricted proxy.
 
@@ -117,8 +138,12 @@ Rerun the Pages workflow. Enforce HTTPS after certificate provisioning finishes.
 | API connection error | Check Render service status, HTTPS, `API_BASE_URL` including `/api`, and the network response |
 | CORS rejection | Match the browser's exact origin in `ALLOWED_ORIGINS`; omit project paths |
 | All users share rate limits | Check trusted proxy topology before changing `TRUST_PROXY_HOPS` |
-| Source host rejected | Confirm it is an approved exact host; do not weaken the policy to make arbitrary URLs work |
+| Source host rejected | Check whether restricted mode is enabled, or whether the host resolves to a blocked address |
 | Resolved preview expires | Resolve again; IDs expire and are lost on restarts |
-| Social page URL rejected | Expected behavior; use official download/export tools or an authorized direct-media URL |
+| Video-page resolver unavailable | Run setup with `--check-runtime`; verify Python, yt-dlp, Deno, and FFmpeg paths on the server |
+| Python version check times out | Use the actual interpreter path; the Render blueprint uses `/usr/bin/python3` to avoid PATH shims |
+| Platform blocks the server | Source-side access can differ from a personal browser; report the actual restriction instead of promising universal support |
+| No complete video quality | The page may expose only unsupported manifests, protected media, silent video, or a file exceeding the cap |
+| Video preparation fails | Confirm FFmpeg runs, temporary storage is writable, and both source tracks remain available |
 | Unknown download percentage | Upstream length is absent or unusable; the UI should show activity without a percentage |
 

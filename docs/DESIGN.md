@@ -2,7 +2,7 @@
 
 ## Product principle
 
-The primary action is always clear: enter an authorized direct-media URL, inspect the actual result, and save the file. Visual effects support that sequence. Compatibility labels describe the current backend instead of implying social platforms already work.
+The primary action is always clear: enter an authorized public video-page or direct-media URL, inspect the actual result, choose a real available quality, and save the file. Visual effects support that sequence. Compatibility labels describe the current extraction support without promising access to every link on a platform.
 
 ## Visual system
 
@@ -25,7 +25,7 @@ The page follows a consistent spacing rhythm. A centered content width anchors t
 - **Navigation:** Sticky translucent bar, recognizable brand, in-page destinations, theme control, and a clear downloader action.
 - **Hero:** Large editorial headline, violet emphasis, concise copy, floating image/video frames, and the main downloader.
 - **Downloader:** A visible URL label, paste affordance, validation, resolving state, real preview, source metadata, available variant selection, and a clear save action.
-- **Compatibility:** Platform identity and explicit status. Direct-media support is separated from page-link restrictions in the copy.
+- **Compatibility:** Platform identity and realistic extraction availability. Protected content, unsupported formats, and source-side hosting blocks receive specific errors.
 - **How it works:** Paste, preview, download. An animated connector establishes the sequence.
 - **Features:** Format support, restrained processing, privacy behavior, and usability explained in compact panels.
 - **FAQ and footer:** Keyboard-operable disclosures, real legal routes, and working destinations.
@@ -47,18 +47,23 @@ Browser / GitHub Pages
 Node / Express API
   Request validation and limits
       ↓
-  Platform registry → explicit restriction guidance for page URLs
-      ↓ direct-file adapter
-  Exact host policy → DNS/IP checks → pinned outbound request
-      ↓ redirects are revalidated
-  Media headers and size checks → expiring opaque media ID
+  Direct file → DNS/IP checks → pinned request → signature/size validation
+  Public page → yt-dlp metadata through guarded public-IP egress
+                → bundled EJS in Deno with denied I/O permissions
+                → real direct MP4/WebM video and compatible audio plans
       ↓
-  Validated server media route → browser preview / attachment save
+  Expiring opaque media ID and actual available format IDs
+      ↓
+  Node downloads tracks with DNS pinning, redirect and byte limits
+      ↓
+  Local-only FFmpeg stream verification / lossless audio-video mux
+      ↓
+  Bounded temporary file → browser preview / attachment save
 ```
 
-The frontend never receives API secrets. It treats server results as untrusted data and presents errors as text. The backend owns source eligibility, network access, byte limits, content validation, and file response headers. Browser URL checks improve feedback but do not replace server validation.
+The frontend never receives API secrets, raw extractor metadata, or source download URLs. It treats server results as untrusted data and presents errors as text. The backend owns network access, byte limits, content validation, temporary preparation, and response headers. Browser URL checks improve feedback but do not replace server validation. Optional restricted-host mode narrows input and track hosts further.
 
-The route layer keeps presentation separate from the downloader state and API transport. The platform registry is the extension point for future authorized providers. An integration must expose only real available assets and qualities and reuse the restricted fetching policy. A source must not become a generic forwarding proxy.
+The route layer keeps presentation separate from the downloader state and API transport. yt-dlp performs metadata extraction, while Node owns all media-byte downloads and FFmpeg receives only local signature-checked media containers. An integration must expose only real assets and qualities, preserve audio, and reuse the network policies. Source recognition does not establish that the source will allow the hosting server to retrieve a particular file.
 
 ## Download states
 
