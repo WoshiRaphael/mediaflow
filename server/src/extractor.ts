@@ -6,7 +6,7 @@ import { isIP } from 'node:net';
 import type { Config } from './config.js';
 import { ApiError } from './errors.js';
 import { createExtractorEgress, extractorEnvironment } from './egress.js';
-import { findPlatform } from './platforms.js';
+import { findPlatform, platformModules } from './platforms.js';
 
 export interface ExtractedSource { url: string; headers?: Record<string, string> }
 export interface ExtractedFormat {
@@ -118,13 +118,18 @@ export function stopExtractor(child: ChildProcess) {
   }
 }
 
-function extractionError(stderr: string): ApiError {
-  if (/confirm you.re not a bot|automated|unusual traffic|rate.limit|HTTP Error (?:403|429)|IP.*block/i.test(stderr)) return new ApiError(422, 'PLATFORM_BLOCKED', 'This platform is blocking access from the hosting server. MediaFlow cannot override that restriction.');
-  if (/private|log.?in|sign.?in|cookies|authentication|members.only|premium/i.test(stderr)) return new ApiError(422, 'LOGIN_REQUIRED', 'This video requires account access or is private. Try a public video that plays without signing in.');
+export function extractionError(stderr: string, platformName?: string): ApiError {
+  // Platform labels come only from our static modules, never stderr or URLs.
+  const source = platformModules.find(platform => platform.name === platformName)?.name ?? 'The source';
+  if (/not a bot|bot verification|verify (?:that )?you(?:'re| are) human|unusual traffic|automated requests/i.test(stderr)) return new ApiError(422, 'PLATFORM_BOT_CHECK', `${source} is asking MediaFlow's server to complete bot verification. The video may still play in your browser, but it cannot currently be downloaded from this host.`);
+  if (/HTTP(?: Error)?\s*429|429 Too Many Requests|rate.limit/i.test(stderr)) return new ApiError(429, 'SOURCE_RATE_LIMITED', `${source} is rate-limiting requests from MediaFlow's hosting server. Please try again later.`);
   if (/DRM|protected/i.test(stderr)) return new ApiError(422, 'PROTECTED_VIDEO', 'This video uses access protection and cannot be downloaded.');
-  if (/Unsupported URL|No video|not a valid URL/i.test(stderr)) return new ApiError(422, 'VIDEO_NOT_FOUND', 'No downloadable video was found at this link. Paste the video’s own post or watch-page URL.');
+  if (/private|log.?in|sign.?in|cookies|authentication|members.only|premium/i.test(stderr)) return new ApiError(422, 'LOGIN_REQUIRED', 'This video requires account access or is private. Try a public video that plays without signing in.');
   if (/timed? out|timeout/i.test(stderr)) return new ApiError(504, 'SOURCE_TIMEOUT', 'The video source took too long to respond. Please try again.');
-  return new ApiError(422, 'SOURCE_UNAVAILABLE', 'This video could not be accessed. It may have been removed, restricted, or blocked by the source platform.');
+  if (/HTTP(?: Error)?\s*403|403 Forbidden|tunnel[^\n]{0,80}\b403\b/i.test(stderr)) return new ApiError(422, 'SOURCE_ACCESS_DENIED', "MediaFlow's server received an access-denied response while requesting video details. The video may still play in your browser.");
+  if (/ProxyError|Tunnel connection failed|CERTIFICATE_VERIFY_FAILED|certificate verify failed|Connection reset|Connection refused|Remote end closed|name resolution|Name or service not known/i.test(stderr)) return new ApiError(502, 'SOURCE_CONNECTION_FAILED', "MediaFlow's server could not connect to the video source. Please retry later.");
+  if (/Unsupported URL|No video|not a valid URL/i.test(stderr)) return new ApiError(422, 'VIDEO_NOT_FOUND', 'No downloadable video was found at this link. Paste the video’s own post or watch-page URL.');
+  return new ApiError(422, 'SOURCE_UNAVAILABLE', "MediaFlow's server could not retrieve this video's details. Please retry or try another link.");
 }
 
 async function runExtraction(input: string, config: Config, signal?: AbortSignal): Promise<ExtractedVideo> {
@@ -147,7 +152,7 @@ async function runExtraction(input: string, config: Config, signal?: AbortSignal
     const result = await new Promise<unknown>((resolve, reject) => {
       const child = spawn(config.pythonPath, [
         config.extractorPath, '--ignore-config', '--no-config-locations', '--no-plugin-dirs', '--no-remote-components',
-        '--no-cache-dir', '--no-playlist', '--playlist-items', '1', '--skip-download', '--dump-single-json', '--no-warnings',
+        '--no-cache-dir', '--no-playlist', '--playlist-items', '1', '--skip-download', '--dump-single-json',
         '--socket-timeout', '15', '--retries', '0', '--extractor-retries', '0', '--fragment-retries', '0',
         '--no-js-runtimes', '--js-runtimes', `deno:${config.denoPath}`,
         '--proxy', transport.url, '--geo-verification-proxy', transport.url,
@@ -179,7 +184,7 @@ async function runExtraction(input: string, config: Config, signal?: AbortSignal
             : /Remote end closed|Connection reset|Connection refused/i.test(detail) ? 'SOURCE_CONNECTION_FAILED'
             : extractionError(detail).code;
           console.warn(JSON.stringify({ event: 'video_resolve_failed', platform: findPlatform(new URL(input).hostname)?.id || 'website', reason }));
-          reject(extractionError(detail)); return;
+          reject(extractionError(detail, findPlatform(new URL(input).hostname)?.name)); return;
         }
         try { resolve(JSON.parse(Buffer.concat(stdout).toString('utf8'))); }
         catch { reject(new ApiError(502, 'INVALID_SOURCE_METADATA', 'The video source returned unreadable details. Please retry.')); }
