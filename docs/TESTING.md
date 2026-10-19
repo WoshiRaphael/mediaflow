@@ -17,16 +17,16 @@ Type checks catch frontend/backend contract errors; tests cover the implemented 
 ## Local functional check
 
 1. Copy both workspace `.env.example` files to `.env` and run `npm run dev`.
-2. Load the homepage and use the labeled real sample URL.
+2. Load the homepage and use its labeled [Big Buck Bunny Archive-page sample](https://archive.org/details/BigBuckBunny_328). This exercises real page extraction, rather than a direct-file shortcut.
 3. Resolve it. Confirm the preview matches the actual file, with its real format and available metadata.
 4. Save the original. Open the saved file and verify its content and extension.
 5. Try a permitted small MP4 or WebM URL and verify video controls and save behavior.
 6. Resolve a small batch of authorized direct-media URLs; inspect any individual error instead of assuming every source succeeds.
-7. Resolve an authorized public video-page link. Confirm the offered quality IDs correspond to actual source files and that every complete video option includes audio. Play the downloaded file and verify sound and picture.
+7. Resolve an authorized public video-page link. Confirm quality IDs correspond to actual source files. Known audio should be labeled accurately; explicitly silent formats should say “video only”; unknown audio metadata should remain unspecified. Play the file and compare its picture and audio with the selected source.
 8. Try invalid input, a private-address URL, a protected/login-required page, and an unavailable source. Confirm each receives a useful error. In restricted-host mode, a hostname outside the configured exact list must also be rejected.
 9. Stop the API, attempt a resolve, restart it, and retry. The UI should recover through a new request.
 
-Sample hosts are external dependencies. If one is unavailable, use a public file you control. Useful authorized page candidates are [Big Buck Bunny on Internet Archive](https://archive.org/details/BigBuckBunny_328), which lists a CC BY 3.0 license, and [Sintel on its director's Vimeo account](https://vimeo.com/59785024). Preserve required attribution and film credits; [Sintel's sharing page](https://durian.blender.org/sharing/) explains its license. Choose a format within the cap. Source availability from a local machine and a cloud service may differ.
+Sample hosts are external dependencies. If one is unavailable, use a public file you control. The included Archive sample is © 2008 Blender Foundation, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), hosted by Internet Archive. Preserve required attribution and film credits. Another authorized page candidate is [Sintel on its director's Vimeo account](https://vimeo.com/59785024); [Sintel's sharing page](https://durian.blender.org/sharing/) explains its license. Choose a format within the cap. Source availability from a local machine and a cloud service may differ; a candidate link is not a claim of a successful hosted download.
 
 ## Responsive and accessibility review
 
@@ -58,7 +58,7 @@ Check an unauthorized browser origin receives no permission to read API response
 
 Exercise the extractor's guarded egress separately: private/reserved DNS answers, CONNECT to a local address, incorrect proxy authorization, unsupported ports, cancellation, and expired requests must fail. Confirm the Deno challenge child cannot fetch network URLs, read local files, or access environment variables. Keep runtime configuration/plugins/remote components disabled.
 
-For preparation, test a progressive video with audio, separate video/audio tracks, a silent video, mismatched MIME/signature, media containing external references, output size limits, stalled downloads, cancellation, simultaneous preparations, cache expiry, and leased-file cleanup. FFmpeg must receive only local files with `file,pipe` protocols and forced MP4/WebM demuxers; its arguments must never include source URLs.
+For preparation, test progressive video with known audio, separate video/audio tracks, explicitly silent video, and progressive video with missing audio metadata. Require audio only when promised; keep explicitly silent files usable with truthful labels, and preserve any actual audio in unknown progressive sources. Also test mismatched MIME/signature, external references, size limits, stalled downloads, cancellation, simultaneous jobs, expiry, and leased-file cleanup. FFmpeg must receive only local files with `file,pipe` protocols and forced MP4/WebM demuxers; its arguments must never include source URLs.
 
 ## Deployment acceptance
 
@@ -68,7 +68,7 @@ Test against the final HTTPS site and API, not only localhost:
 2. The public HTML metadata, Open Graph URL, sitemap, and robots file use the intended public site URL.
 3. A real image and a real video resolve, preview, and download from a permitted host.
 4. The site's origin is allowed; an unrelated browser origin is rejected.
-5. An authorized public source-page link resolves to real available qualities, then produces a playable file with both audio and video. A hosting-IP or protected-content failure remains visible and is not reported as success.
+5. An authorized public source-page link resolves to real available qualities and produces a playable file with audio matching the source and the stated metadata. Explicitly silent files remain labeled video only; unknown audio availability remains unspecified. Hosting-IP or protected-content failures remain visible.
 6. Light/dark themes, reduced motion, keyboard operation, FAQ, legal routes, clipboard fallback, retry, cancellation, and batch behavior work.
 7. Test progress with a measurable response length and an indeterminate response. The UI must not manufacture a percentage.
 8. Test a real iOS Safari and Android Chrome device if mobile downloading is part of the launch promise. Save, preview, and share behavior varies by browser.

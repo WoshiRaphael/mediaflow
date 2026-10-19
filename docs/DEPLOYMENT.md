@@ -143,7 +143,7 @@ Rerun the Pages workflow. Enforce HTTPS after certificate provisioning finishes.
 | Video-page resolver unavailable | Run setup with `--check-runtime`; verify Python, yt-dlp, Deno, and FFmpeg paths on the server |
 | Python version check times out | Use the actual interpreter path; the Render blueprint uses `/usr/bin/python3` to avoid PATH shims |
 | Platform blocks the server | Source-side access can differ from a personal browser; report the actual restriction instead of promising universal support |
-| No complete video quality | The page may expose only unsupported manifests, protected media, silent video, or a file exceeding the cap |
-| Video preparation fails | Confirm FFmpeg runs, temporary storage is writable, and both source tracks remain available |
+| No downloadable video quality | The page may expose only unsupported manifests, protected media, or a file exceeding the cap; explicitly silent video is supported with a “video only” label |
+| Video preparation fails | Confirm FFmpeg runs, temporary storage is writable, selected tracks remain available, and any promised audio actually exists |
 | Unknown download percentage | Upstream length is absent or unusable; the UI should show activity without a percentage |
 

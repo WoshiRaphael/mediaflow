@@ -63,7 +63,7 @@ Node / Express API
 
 The frontend never receives API secrets, raw extractor metadata, or source download URLs. It treats server results as untrusted data and presents errors as text. The backend owns network access, byte limits, content validation, temporary preparation, and response headers. Browser URL checks improve feedback but do not replace server validation. Optional restricted-host mode narrows input and track hosts further.
 
-The route layer keeps presentation separate from the downloader state and API transport. yt-dlp performs metadata extraction, while Node owns all media-byte downloads and FFmpeg receives only local signature-checked media containers. An integration must expose only real assets and qualities, preserve audio, and reuse the network policies. Source recognition does not establish that the source will allow the hosting server to retrieve a particular file.
+The route layer keeps presentation separate from the downloader state and API transport. yt-dlp performs metadata extraction, while Node owns media-byte downloads and FFmpeg receives only local signature-checked containers. An integration must expose real assets, preserve available audio, and distinguish known audio, explicitly video-only media, and unknown audio metadata. It must reuse the network policies. Source recognition does not establish that the source will allow the hosting server to retrieve a particular file.
 
 ## Download states
 
