@@ -77,5 +77,7 @@ Test against the final HTTPS site and API, not only localhost:
 
 ## Extending coverage
 
+Operators can run `node server/scripts/diagnose-source.mjs "https://example.com/public-video-page"` from the repository root after building the server. This is an operator-only troubleshooting command, never a public endpoint: it uses the production resolver and guarded network transport, enables extractor warnings for that invocation, and prints only title/platform/format count on success or bounded diagnostics on failure. Failure output includes stable message flags, the extractor exit code, and at most eight redacted stderr lines of 400 characters each; source URLs, proxy credentials, query values, and long opaque tokens are removed. Flags identify observed messages rather than proving a root cause. Do not add verbose logging or publish diagnostic output without reviewing it. Source failures exit successfully so a temporary diagnostic does not break a deployment; invalid usage or unsafe input exits with code 1. Remove a temporary build-command invocation after collecting the result.
+
 When adding an authorized platform adapter, test permission/credential failure, no media available, one and multiple variants, expired source URLs, partial batch failure, redirect policy, and source removal. Verify that every offered variant corresponds to a real downloadable file. Keep credentials out of browser fixtures and CI logs.
 
