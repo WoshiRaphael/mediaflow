@@ -1,0 +1,28 @@
+{
+  "ytDlp": {
+    "version": "2026.08.19",
+    "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp",
+    "sha256": "1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6",
+    "artifact": "yt-dlp",
+    "variant": "python-zipimport",
+    "release": "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19"
+  },
+  "deno": {
+    "version": "2.9.7",
+    "release": "https://github.com/denoland/deno/releases/tag/v2.9.7",
+    "targets": {
+      "linux-x64": {
+        "asset": "deno-x86_64-unknown-linux-gnu.zip",
+        "entry": "deno",
+        "archiveSha256": "c6527f24f4b16031d3ae4fa9f658d5f11534c8d84ce7dc8502420280919c3490",
+        "binarySha256": "ce6a052beb97c2b92de67077e3f3924ba7c9661ede0d8dc2f66a116a3c841f21"
+      },
+      "win32-x64": {
+        "asset": "deno-x86_64-pc-windows-msvc.zip",
+        "entry": "deno.exe",
+        "archiveSha256": "a0c3101b4158d1dfb7d6a78a7bf0f3de80c96bb423c152beec8beb22786f2238",
+        "binarySha256": "e020f3e232bd16e33768dee528e5983349c962952051ced0a5d58ad42f5d9b33"
+      }
+    }
+  }
+}
