@@ -23,7 +23,7 @@ const request: PinnedRequest = async (url, _address, _config, range) => {
   }
   return { statusCode: 200, headers: { 'content-type': mime, 'content-length': String(bytes.length) }, body: Readable.from([bytes]), destroy() { this.body.destroy(); } };
 };
-const config = loadConfig({ RATE_LIMIT_PER_MINUTE: '100' });
+const config = loadConfig({ RATE_LIMIT_PER_MINUTE: '100', EXTRACTOR_ENABLED: 'false' });
 const server = createServer(createApp(config, { lookup: async () => [{ address: '8.8.8.8', family: 4 }], request }));
 await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
 const address = server.address();
@@ -55,7 +55,7 @@ test('unsupported pages and mismatched declared content return clear errors', as
     const result = await resolveUrl(path);
     assert.equal(result.status, 422);
     const payload = await result.json() as { error: { code: string } };
-    assert.match(payload.error.code, /UNSUPPORTED_MEDIA|CONTENT_TYPE_MISMATCH/);
+    assert.match(payload.error.code, /UNSUPPORTED_MEDIA|CONTENT_TYPE_MISMATCH|EXTRACTOR_DISABLED/);
   }
 });
 
@@ -85,7 +85,7 @@ test('batch contains individual errors and rejects more than five URLs', async (
   const payload = await batch.json() as { results: { media?: unknown; error?: { code: string } }[] };
   assert.equal(payload.results.length, 2);
   assert.ok(payload.results[0].media);
-  assert.equal(payload.results[1].error?.code, 'PLATFORM_RESTRICTED');
+  assert.equal(payload.results[1].error?.code, 'EXTRACTOR_DISABLED');
   const oversized = await fetch(`${base}/api/batch`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ urls: Array(6).fill('https://images.unsplash.com/test.gif') }) });
   assert.equal(oversized.status, 400);
 });

@@ -1,0 +1,126 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { connect, createServer } from 'node:net';
+import { once } from 'node:events';
+import { createExtractorEgress, extractorEnvironment } from '../src/egress.js';
+import { parseExtractedVideo } from '../src/extractor.js';
+
+const url = 'https://www.youtube.com/watch?v=example';
+const base = { title: 'A public test video', extractor_key: 'Youtube', duration: 5 };
+const combined = { format_id: 'source-720', url: 'https://cdn.example.org/movie.mp4', protocol: 'https', ext: 'mp4', vcodec: 'avc1', acodec: 'mp4a.40.2', width: 1280, height: 720, filesize: 1000 };
+
+test('real format plans include only complete, safe video+audio choices', () => {
+  const parsed = parseExtractedVideo({ ...base, formats: [combined,
+    { ...combined, height: 1080, acodec: 'none', url: 'https://cdn.example.org/video.mp4', filesize: 1500 },
+    { format_id: 'audio', url: 'https://cdn.example.org/audio.m4a', ext: 'm4a', protocol: 'https', vcodec: 'none', acodec: 'mp4a.40.2', abr: 128, filesize: 300 },
+    { ...combined, height: 2160, has_drm: true },
+    { ...combined, height: 1440, url: 'file:///etc/passwd' },
+    { ...combined, height: 480, protocol: 'm3u8_native' },
+  ] }, url, 10000);
+  assert.equal(parsed.platform, 'youtube');
+  assert.equal(parsed.formats.length, 2);
+  assert.equal(parsed.formats[0].height, 720);
+  const merged = parsed.formats.find(format => format.needsMerge)!;
+  assert.equal(merged.height, 1080); assert.equal(merged.size, 1800);
+  assert.equal(merged.sources.length, 2);
+  assert.ok(parsed.formats.every(format => format.hasAudio));
+});
+
+test('source credentials and arbitrary headers never reach a download plan', () => {
+  const parsed = parseExtractedVideo({ ...base, formats: [{ ...combined, http_headers: {
+    Cookie: 'private', Authorization: 'secret', Host: '127.0.0.1', 'Proxy-Authorization': 'secret',
+    'User-Agent': 'Public player', Referer: 'https://www.youtube.com/watch?v=example', 'X-Injected': 'a\r\nb: c',
+  } }] }, url, 10000);
+  assert.deepEqual(parsed.formats[0].sources[0].headers, { 'User-Agent': 'Public player', Referer: url });
+  assert.throws(() => parseExtractedVideo({ ...base, formats: [{ ...combined, url: 'https://user:secret@cdn.example.org/a.mp4' }] }, url, 10000));
+  assert.throws(() => parseExtractedVideo({ ...base, formats: [{ ...combined, url: 'https://127.0.0.1/a.mp4' }] }, url, 10000));
+});
+
+test('progressive files without codec metadata remain eligible for local stream verification', () => {
+  const parsed = parseExtractedVideo({ title: 'Public HTML5 video', url: 'https://cdn.example.org/movie.mp4', ext: 'mp4', protocol: 'https' }, 'https://example.org/watch', 10000);
+  assert.equal(parsed.formats.length, 1);
+  assert.equal(parsed.formats[0].needsMerge, undefined);
+  assert.equal(parsed.formats[0].videoCodec, undefined);
+  assert.equal(parsed.formats[0].sources.length, 1);
+});
+
+test('protected videos, live streams, playlists, oversized and silent sources are rejected', () => {
+  for (const extra of [{ has_drm: true }, { is_live: true }, { availability: 'private' }, { _type: 'playlist', entries: [] }]) {
+    assert.throws(() => parseExtractedVideo({ ...base, formats: [combined], ...extra }, url, 10000));
+  }
+  assert.throws(() => parseExtractedVideo({ ...base, formats: [{ ...combined, acodec: 'none' }] }, url, 10000));
+  assert.throws(() => parseExtractedVideo({ ...base, formats: [combined] }, url, 10));
+});
+
+test('extractor process never inherits proxy bypasses or account credentials', () => {
+  const previous = process.env.NO_PROXY;
+  process.env.NO_PROXY = '*';
+  try {
+    const environment = extractorEnvironment('http://guard.example');
+    assert.equal(environment.NO_PROXY, ''); assert.equal(environment.no_proxy, '');
+    assert.equal(environment.HTTPS_PROXY, 'http://guard.example');
+    assert.equal(environment.AWS_SECRET_ACCESS_KEY, undefined); assert.equal(environment.HOME, undefined);
+  } finally { if (previous === undefined) delete process.env.NO_PROXY; else process.env.NO_PROXY = previous; }
+});
+
+async function tunnel(proxy: string, authority: string, authorized = true): Promise<string> {
+  const address = new URL(proxy);
+  const auth = Buffer.from(`${address.username}:${address.password}`).toString('base64');
+  const socket = connect({ host: address.hostname, port: Number(address.port) });
+  await once(socket, 'connect');
+  socket.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${authorized ? `Proxy-Authorization: Basic ${auth}\r\n` : ''}\r\n`);
+  try {
+    const chunks: Buffer[] = [];
+    return await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => { socket.destroy(); reject(new Error('Proxy fixture timeout')); }, 2000);
+      socket.on('data', bytes => { chunks.push(bytes); if (Buffer.concat(chunks).includes(Buffer.from('\r\n\r\n'))) { clearTimeout(timeout); resolve(Buffer.concat(chunks).toString()); } });
+      socket.on('error', reject);
+      socket.on('end', () => { clearTimeout(timeout); resolve(Buffer.concat(chunks).toString()); });
+    });
+  } finally { socket.destroy(); }
+}
+
+test('private proxy requires authentication and rejects unsafe authorities before DNS', async () => {
+  let lookups = 0;
+  const egress = await createExtractorEgress(undefined, { lookup: async () => { lookups++; return [{ address: '8.8.8.8', family: 4 }]; } });
+  try {
+    assert.match(await tunnel(egress.url, 'example.org:443', false), /407/);
+    for (const authority of ['127.0.0.1:443', '[::1]:443', 'example.org:80', 'user@example.org:443', 'example.org:443/private']) assert.match(await tunnel(egress.url, authority), /403/);
+    assert.equal(lookups, 0);
+  } finally { egress.close(); }
+});
+
+test('proxy rejects mixed DNS answers and never opens a connection to private networks', async () => {
+  let connected = false;
+  const egress = await createExtractorEgress(undefined, { lookup: async () => [{ address: '8.8.8.8', family: 4 }, { address: '127.0.0.1', family: 4 }], connect: () => { connected = true; throw new Error('must not connect'); } });
+  try { assert.match(await tunnel(egress.url, 'example.org:443'), /403/); assert.equal(connected, false); }
+  finally { egress.close(); }
+});
+
+test('a checked DNS address is pinned and CONNECT tunnel can transfer data', async () => {
+  const fixture = createServer(socket => socket.end('fixture'));
+  fixture.listen(0, '127.0.0.1'); await once(fixture, 'listening');
+  const port = (fixture.address() as { port: number }).port;
+  let checked = '';
+  let lookups = 0;
+  const egress = await createExtractorEgress(undefined, {
+    lookup: async () => { lookups++; return [{ address: '8.8.8.8', family: 4 }]; },
+    connect: address => { checked = address.address; return connect({ host: '127.0.0.1', port }); },
+  });
+  try { assert.match(await tunnel(egress.url, 'example.org:443'), /200 Connection Established/); assert.equal(checked, '8.8.8.8'); assert.equal(lookups, 1); }
+  finally { egress.close(); fixture.close(); }
+});
+
+test('cancelled proxy DNS lookup cannot create a late connection', async () => {
+  const controller = new AbortController(); let connected = false;
+  let release!: (value: { address: string; family: 4 }[]) => void;
+  const egress = await createExtractorEgress(controller.signal, { lookup: () => new Promise(resolve => { release = resolve; }), connect: () => { connected = true; throw new Error('must not connect'); } });
+  const address = new URL(egress.url);
+  const socket = connect({ host: address.hostname, port: Number(address.port) }); await once(socket, 'connect');
+  const auth = Buffer.from(`${address.username}:${address.password}`).toString('base64');
+  socket.write(`CONNECT example.org:443 HTTP/1.1\r\nProxy-Authorization: Basic ${auth}\r\n\r\n`);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  controller.abort(); release([{ address: '8.8.8.8', family: 4 }]);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(connected, false); socket.destroy(); egress.close();
+});

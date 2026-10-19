@@ -8,7 +8,7 @@ import { MediaRegistry } from '../src/registry.js';
 import { isPublicAddress, parseByteRange, resolvePublicAddress, validateUrl } from '../src/security.js';
 import { checkDeclaredSize, openMedia, pinnedLookup, type UpstreamResponse } from '../src/upstream.js';
 
-const config = loadConfig({});
+const config = loadConfig({ ALLOW_PUBLIC_MEDIA: 'false' });
 const response = (statusCode = 200, headers = {}): UpstreamResponse => ({ statusCode, headers, body: Readable.from([]), destroy() { this.body.destroy(); } });
 
 test('blocks private, reserved, metadata, mapped, transition and documentation IPs', () => {
@@ -27,6 +27,12 @@ test('validates scheme, userinfo, ports, exact allowlist and platform restrictio
   for (const url of ['http://images.unsplash.com/test.jpg', 'https://user:pass@images.unsplash.com/a', 'https://images.unsplash.com:444/a', 'https://images.unsplash.com.attacker.test/a', 'https://127.0.0.1/a', 'file:///test.jpg', 'https://images.unsplash.com./a']) assert.throws(() => validateUrl(url, config));
   assert.throws(() => validateUrl('https://www.youtube.com/watch?v=a', config), (error: unknown) => error instanceof ApiError && error.code === 'PLATFORM_RESTRICTED');
   assert.equal(validateUrl('https://images.unsplash.com/photo?a=1#fragment', config).href, 'https://images.unsplash.com/photo?a=1');
+});
+
+test('public-media mode accepts HTTPS sources while strict mode retains the exact allowlist', () => {
+  assert.equal(validateUrl('https://cdn.example.org/video.mp4', loadConfig({})).hostname, 'cdn.example.org');
+  assert.throws(() => validateUrl('https://cdn.example.org/video.mp4', config));
+  for (const input of ['http://cdn.example.org/video.mp4', 'https://user:pass@cdn.example.org/video.mp4', 'https://cdn.example.org:8080/video.mp4']) assert.throws(() => validateUrl(input, loadConfig({})));
 });
 
 test('pins the checked DNS answer and rechecks allowed redirects', async () => {
