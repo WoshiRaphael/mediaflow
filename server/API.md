@@ -52,16 +52,21 @@ full size reliably. Width and height are provided for PNG/GIF when the header
 contains them. No dimensions, bitrate, duration, quality variant or conversion is
 invented. Direct files provide a single original format. For a public video page,
 the response instead contains real available `video-…` format IDs, labels,
-`hasAudio: true`, available codec/dimension metadata, and optional duration. The
+available codec/dimension metadata, and optional duration. Audio metadata has
+three states: `hasAudio: true` for known audio (including a merged audio track),
+`hasAudio: false` for an explicitly silent source labeled “video only”, and no
+`hasAudio` property when source metadata does not establish audio availability. The
 server exposes no raw source URLs, cookies, extractor options, or credentials.
 This service does not upscale, transcode, or produce MP3 files.
 
 Direct-file resolution reads at most 64 KiB and closes the probe. It requests a
 byte range but handles sources that ignore it. HTML and recognized video pages
 use metadata extraction through a guarded egress proxy. Only unencrypted direct
-MP4/WebM video files with audio, or video with a compatible separate audio track,
-become plans. Manifest-only, silent-only, live, login-required, and DRM formats
-are excluded. Actual size is optional until preparation; a source can expire
+MP4/WebM video files become plans. A compatible separate audio track is merged
+when available. Explicitly silent formats remain downloadable with a truthful
+label; unknown progressive audio metadata remains unspecified, and the original
+file retains any audio it contains. Manifest-only, live, login-required, and DRM
+formats are excluded. Actual size is optional until preparation; a source can expire
 between metadata resolution and retrieval.
 
 ### GET /media/:id?format=FORMAT_ID&disposition=attachment
@@ -73,10 +78,12 @@ files use `original`. Unknown IDs are rejected. `disposition` defaults to
 `Range: bytes=…` header. Multipart ranges are rejected.
 
 For page results, Node securely downloads the selected track(s) to private
-temporary files. FFmpeg verifies video/audio stream presence and combines
+temporary files. FFmpeg verifies video and any promised audio, and combines
 separate tracks using codec copy, without transcoding or network input. FFmpeg
-is required for progressive files too: a mislabeled silent file must not be
-served as a complete video. The selected result is prepared once and reused
+is required for progressive files too. A format promised to contain audio must
+actually have it; explicitly video-only formats do not require an audio stream.
+Unknown progressive audio is optional during verification, and its source file
+is preserved. The selected result is prepared once and reused
 until expiry. Concurrent requests share preparation; cancellation of all
 waiters aborts an unfinished job. Local prepared files provide actual length and
 byte-range responses. Direct-file sources may ignore a range request and return
