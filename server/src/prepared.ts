@@ -126,6 +126,7 @@ export class PreparedMediaStore {
     let prefixLength = 0;
     const file = await open(path, 'wx', 0o600);
     let offset = 0;
+    let sourceUrl = source.url;
     let expectedTotal: number | undefined;
     const chunkSize = 1024 * 1024;
     try {
@@ -134,7 +135,12 @@ export class PreparedMediaStore {
       for (let requestIndex = 0; requestIndex < 128; requestIndex++) {
         signal.throwIfAborted();
         const requestedEnd = Math.min(offset + chunkSize - 1, (expectedTotal ?? this.config.maxFileBytes) - 1);
-        const { response } = await openMedia(source.url, { ...this.config, requestTimeoutMs: this.config.downloadTimeoutMs }, `bytes=${offset}-${requestedEnd}`, this.transport, signal, source.headers);
+        const opened = await openMedia(sourceUrl, { ...this.config, requestTimeoutMs: this.config.downloadTimeoutMs }, `bytes=${offset}-${requestedEnd}`, this.transport, signal, source.headers);
+        const { response } = opened;
+        // Reuse the validated final location rather than repeating the same
+        // origin redirect for every chunk. DNS and any new redirects are still
+        // checked independently by openMedia on each subsequent request.
+        sourceUrl = opened.url.href;
         try {
           const declared = checkDeclaredSize(response, this.config.maxFileBytes);
           const bytesBeforeSource = total.bytes - offset;

@@ -116,7 +116,7 @@ export function stopExtractor(child: ChildProcess) {
 }
 
 function extractionError(stderr: string): ApiError {
-  if (/confirm you.re not a bot|automated|unusual traffic|rate.limit|HTTP Error 429|IP.*block/i.test(stderr)) return new ApiError(422, 'PLATFORM_BLOCKED', 'This platform is blocking access from the hosting server. MediaFlow cannot override that restriction.');
+  if (/confirm you.re not a bot|automated|unusual traffic|rate.limit|HTTP Error (?:403|429)|IP.*block/i.test(stderr)) return new ApiError(422, 'PLATFORM_BLOCKED', 'This platform is blocking access from the hosting server. MediaFlow cannot override that restriction.');
   if (/private|log.?in|sign.?in|cookies|authentication|members.only|premium/i.test(stderr)) return new ApiError(422, 'LOGIN_REQUIRED', 'This video requires account access or is private. Try a public video that plays without signing in.');
   if (/DRM|protected/i.test(stderr)) return new ApiError(422, 'PROTECTED_VIDEO', 'This video uses access protection and cannot be downloaded.');
   if (/Unsupported URL|No video|not a valid URL/i.test(stderr)) return new ApiError(422, 'VIDEO_NOT_FOUND', 'No downloadable video was found at this link. Paste the video’s own post or watch-page URL.');
@@ -164,7 +164,20 @@ async function runExtraction(input: string, config: Config, signal?: AbortSignal
       child.once('close', code => {
         clearTimeout(timer); controller.signal.removeEventListener('abort', cancel);
         if (failure) { reject(failure); return; }
-        if (code !== 0) { reject(extractionError(Buffer.concat(stderr).toString('utf8'))); return; }
+        if (code !== 0) {
+          const detail = Buffer.concat(stderr).toString('utf8');
+          // Log a bounded classification only: never source URLs, cookies,
+          // extractor output, private proxy credentials or raw diagnostics.
+          const httpStatus = /HTTP Error (\d{3})/.exec(detail)?.[1];
+          const reason = httpStatus ? `HTTP_${httpStatus}` : /CERTIFICATE_VERIFY_FAILED|certificate verify failed/i.test(detail) ? 'TLS_CERTIFICATE_FAILED'
+            : /Tunnel connection failed|ProxyError|proxy/i.test(detail) ? 'SOURCE_TUNNEL_FAILED'
+            : /timed? out|timeout/i.test(detail) ? 'SOURCE_TIMEOUT'
+            : /Name or service not known|name resolution|nodename nor servname/i.test(detail) ? 'SOURCE_DNS_FAILED'
+            : /Remote end closed|Connection reset|Connection refused/i.test(detail) ? 'SOURCE_CONNECTION_FAILED'
+            : extractionError(detail).code;
+          console.warn(JSON.stringify({ event: 'video_resolve_failed', platform: findPlatform(new URL(input).hostname)?.id || 'website', reason }));
+          reject(extractionError(detail)); return;
+        }
         try { resolve(JSON.parse(Buffer.concat(stdout).toString('utf8'))); }
         catch { reject(new ApiError(502, 'INVALID_SOURCE_METADATA', 'The video source returned unreadable details. Please retry.')); }
       });
