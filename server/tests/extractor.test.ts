@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { connect, createServer } from 'node:net';
 import { once } from 'node:events';
 import { createExtractorEgress, extractorEnvironment } from '../src/egress.js';
-import { cancelExtractions, extractVideoPage, parseExtractedVideo } from '../src/extractor.js';
+import { cancelExtractions, extractionError, extractVideoPage, parseExtractedVideo } from '../src/extractor.js';
 import { loadConfig } from '../src/config.js';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,6 +12,40 @@ import { join } from 'node:path';
 const url = 'https://www.youtube.com/watch?v=example';
 const base = { title: 'A public test video', extractor_key: 'Youtube', duration: 5 };
 const combined = { format_id: 'source-720', url: 'https://cdn.example.org/movie.mp4', protocol: 'https', ext: 'mp4', vcodec: 'avc1', acodec: 'mp4a.40.2', width: 1280, height: 720, filesize: 1000 };
+
+test('explicit bot verification takes precedence over sign-in wording and HTTP429', () => {
+  const error = extractionError("WARNING: HTTP Error 429: Too Many Requests\nERROR: Sign in to confirm you're not a bot. https://example.org/private?token=secret", 'YouTube');
+  assert.equal(error.code, 'PLATFORM_BOT_CHECK');
+  assert.match(error.message, /YouTube.*bot verification/);
+  assert.match(error.message, /may still play in your browser/);
+  assert.match(error.message, /cannot currently be downloaded from this host/);
+  assert.doesNotMatch(error.message, /secret|example\.org|https:/);
+});
+
+test('HTTP429 without a bot challenge identifies hosting-server rate limiting', () => {
+  const error = extractionError('ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests', 'YouTube');
+  assert.equal(error.code, 'SOURCE_RATE_LIMITED');
+  assert.equal(error.status, 429);
+  assert.match(error.message, /hosting server/);
+  assert.doesNotMatch(error.message, /bot|private|removed/);
+});
+
+test('a forbidden proxy tunnel does not establish a platform bot block', () => {
+  const error = extractionError('ERROR: ProxyError: Tunnel connection failed: 403 Forbidden', 'YouTube');
+  assert.equal(error.code, 'SOURCE_ACCESS_DENIED');
+  assert.doesNotMatch(error.message, /bot|YouTube is blocking|requires account/);
+  assert.equal(extractionError('WARNING: HTTP Error 403: Forbidden\nERROR: No video formats found').code, 'SOURCE_ACCESS_DENIED');
+});
+
+test('unclassified extractor failures disclose no raw diagnostics or unsupported assumptions', () => {
+  const error = extractionError('ERROR: unexpected value https://example.org/path?token=secret user@example.org personal-data', 'https://unsafe.example/secret');
+  assert.equal(error.code, 'SOURCE_UNAVAILABLE');
+  assert.match(error.message, /MediaFlow's server could not retrieve/);
+  assert.doesNotMatch(error.message, /secret|example|personal-data|removed|restricted|blocked/);
+  assert.equal(extractionError('DRM protected stream').code, 'PROTECTED_VIDEO');
+  assert.equal(extractionError('Private video; login required').code, 'LOGIN_REQUIRED');
+  assert.equal(extractionError('The connection timed out').code, 'SOURCE_TIMEOUT');
+});
 
 test('real format plans include only complete, safe video+audio choices', () => {
   const parsed = parseExtractedVideo({ ...base, formats: [combined,
