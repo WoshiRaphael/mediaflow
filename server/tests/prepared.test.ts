@@ -153,7 +153,12 @@ test('real progressive preparation joins capped sequential ranges with checked D
   const temporaryRoot = await mkdtemp(join(fixtures, 'range-root-'));
   const ranges: string[] = [];
   let lookups = 0;
-  const store = new PreparedMediaStore(config, { lookup: async () => { lookups++; return dns(); }, request: async (_url, _address, _config, range) => {
+  let originRequests = 0;
+  const store = new PreparedMediaStore(config, { lookup: async () => { lookups++; return dns(); }, request: async (url, _address, _config, range) => {
+    if (url.hostname === 'cdn.example.org') {
+      originRequests++;
+      return { statusCode: 302, headers: { location: 'https://media.example.org/combined.mp4' }, body: Readable.from([]), destroy() { this.body.destroy(); } };
+    }
     assert.ok(range);
     ranges.push(range!);
     const match = /^bytes=(\d+)-(\d+)$/.exec(range!)!;
@@ -168,7 +173,8 @@ test('real progressive preparation joins capped sequential ranges with checked D
     assert.deepEqual(await readFile(lease.path), combined);
     assert.equal(lease.size, combined.length);
     assert.ok(ranges.length > 1);
-    assert.equal(lookups, ranges.length);
+    assert.equal(lookups, ranges.length + 1, 'each range and the initial redirect get a fresh checked DNS answer');
+    assert.equal(originRequests, 1, 'later chunks reuse the validated final location');
     lease.release();
   } finally { await store.dispose(); }
 });
@@ -178,7 +184,7 @@ test('overlapping and incomplete source ranges are rejected with partial-file cl
     const temporaryRoot = await mkdtemp(join(fixtures, `bad-${mode}-`));
     let requests = 0;
     const store = new PreparedMediaStore(config, { lookup: dns, request: async () => {
-      const requestIndex = requests++;
+      requests++;
       const start = 0;
       const end = mode === 'incomplete' ? 63 : 31;
       const bytes = Buffer.alloc(32);
