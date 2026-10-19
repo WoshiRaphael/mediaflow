@@ -30,6 +30,19 @@ function isAborted(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError';
 }
 
+function sourceLabel(platform: string): string {
+  const names: Record<string, string> = { direct: 'Direct file', youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok', facebook: 'Facebook', pinterest: 'Pinterest', reddit: 'Reddit', x: 'X', twitter: 'X' };
+  return names[platform.toLowerCase()] || platform.replace(/[_-]/g, ' ');
+}
+
+function thumbnailUrl(value?: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = new URL(value, window.location.origin);
+    return parsed.protocol === 'https:' || parsed.origin === window.location.origin ? parsed.href : undefined;
+  } catch { return undefined; }
+}
+
 function MediaCard({ media, compact = false, onToast }: { media: ResolvedMedia; compact?: boolean; onToast: (message: string) => void }) {
   const reducedMotion = useReducedMotion();
   const qualityId = useId();
@@ -40,6 +53,7 @@ function MediaCard({ media, compact = false, onToast }: { media: ResolvedMedia; 
   const [previewFailed, setPreviewFailed] = useState(false);
   const downloadController = useRef<AbortController | null>(null);
   const format = media.formats.find((item) => item.id === formatId) || media.formats[0];
+  const thumbnail = thumbnailUrl(media.thumbnail);
   const percentage = progress.total ? Math.min(100, Math.round(progress.received / progress.total * 100)) : undefined;
 
   useEffect(() => () => downloadController.current?.abort(), []);
@@ -79,11 +93,13 @@ function MediaCard({ media, compact = false, onToast }: { media: ResolvedMedia; 
           <div className="dl-preview-fallback">
             {media.kind === 'video' ? <Film size={28} /> : <Image size={28} />}
             <span>Preview unavailable</span>
-            <span className="dl-preview-fallback-note">You can still try downloading the file.</span>
+            <span className="dl-preview-fallback-note">The source or this browser could not load a preview. You can still try downloading the file.</span>
           </div>
         ) : media.kind === 'video' ? (
           <video
+            key={format.id}
             src={mediaUrl(media.id, format.id)}
+            poster={thumbnail}
             controls playsInline preload="metadata"
             aria-label={`Video preview: ${media.title}`}
             onError={() => setPreviewFailed(true)}
@@ -97,18 +113,20 @@ function MediaCard({ media, compact = false, onToast }: { media: ResolvedMedia; 
         <div className="dl-result-heading">
           <span className="dl-ready"><span /> Ready to download</span>
           <h3 title={media.title}>{media.title || 'Your media'}</h3>
+          <div className="dl-meta dl-source-meta"><span>{sourceLabel(media.platform)}</span><span>{media.formats.length} {media.formats.length === 1 ? 'available format' : 'available formats'}</span></div>
           <div className="dl-meta">
             <span>{format.extension.toUpperCase()}</span>
             <span>{formatBytes(format.size)}</span>
             {format.width && format.height ? <span>{format.width} × {format.height}</span> : null}
           </div>
+          {media.kind === 'video' && format.hasAudio === false && <p className="dl-helper dl-codec-note"><span>Video only · this format has no audio track.</span></p>}
         </div>
         <div className="dl-result-actions">
           <div className="dl-quality">
-            <label htmlFor={qualityId}>Quality</label>
+            <label htmlFor={qualityId}>{media.formats.length > 1 ? 'Available formats' : 'Format'}</label>
             <div className="dl-quality-control">
               <select id={qualityId} value={formatId} disabled={status === 'downloading'} onChange={(event) => { setFormatId(event.target.value); setStatus('idle'); setPreviewFailed(false); }}>
-                {media.formats.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                {media.formats.map((option) => <option key={option.id} value={option.id}>{option.label}{option.hasAudio === false && !/video.?only|no audio|silent/i.test(option.label) ? ' · video only' : ''}</option>)}
               </select>
               <ChevronDown size={14} aria-hidden="true" />
             </div>
@@ -152,6 +170,7 @@ export default function Downloader({ onToast, compact = false }: DownloaderProps
   const [url, setUrl] = useState('');
   const [batchText, setBatchText] = useState('');
   const [isResolving, setIsResolving] = useState(false);
+  const [slowResolve, setSlowResolve] = useState(false);
   const [result, setResult] = useState<ResolvedMedia | null>(null);
   const [batch, setBatch] = useState<BatchItem[]>([]);
   const [error, setError] = useState('');
@@ -174,6 +193,12 @@ export default function Downloader({ onToast, compact = false }: DownloaderProps
     const timer = window.setTimeout(() => setNotice(''), 6000);
     return () => window.clearTimeout(timer);
   }, [notice]);
+  useEffect(() => {
+    setSlowResolve(false);
+    if (!isResolving) return;
+    const timer = window.setTimeout(() => setSlowResolve(true), 12_000);
+    return () => window.clearTimeout(timer);
+  }, [isResolving]);
 
   function notify(message: string) {
     if (onToast) onToast(message);
@@ -296,7 +321,7 @@ export default function Downloader({ onToast, compact = false }: DownloaderProps
         <div className={`dl-entry${isBatch ? ' dl-entry-batch' : ''}`}>
           <div className={`dl-field${(isBatch ? batchText : url) ? ' has-value' : ''}${error ? ' has-error' : ''}`}>
             <Link2 size={19} className="dl-input-icon" aria-hidden="true" />
-            <label className="dl-field-label" htmlFor={inputId}>{isBatch ? 'Paste your media links, one per line' : 'Paste your video or image link here'}</label>
+            <label className="dl-field-label" htmlFor={inputId}>{isBatch ? 'Paste public links, one per line' : 'Paste a public page, video or image link'}</label>
             {isBatch ? (
               <textarea id={inputId} ref={textareaRef} value={batchText} rows={3} maxLength={10_500} placeholder=" " aria-describedby={helperId} aria-invalid={Boolean(error)} disabled={isResolving} onChange={(event) => { setBatchText(event.target.value); setError(''); }} />
             ) : (
@@ -311,11 +336,11 @@ export default function Downloader({ onToast, compact = false }: DownloaderProps
           </motion.button>
         </div>
         <div className="dl-helper" id={helperId}>
-          <span><LockKeyhole size={11} />{isBatch ? 'Up to 5 links · Download each file individually' : 'Public, authorized media. Approved direct sources only.'}</span>
+          <span><LockKeyhole size={11} />{isBatch ? 'Up to 5 links · Download each file individually' : 'Public media you can save. Availability varies by source.'}</span>
           {isResolving ? <button className="dl-cancel" type="button" onClick={() => controllerRef.current?.abort()}><X size={12} /> Cancel</button> : <button className="dl-demo" type="button" onClick={tryDemo}><Play size={10} fill="currentColor" /> Try a sample <ArrowRight size={11} /></button>}
         </div>
       </form>
-      <AnimatePresence mode="wait" initial={false}>
+      <AnimatePresence initial={false}>
         {error && (
           <motion.div key="error" className="dl-error" role="alert" initial={{ opacity: 0, y: reducedMotion ? 0 : -5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
             <CircleAlert size={16} /><span>{error}</span><button type="button" disabled={isResolving} onClick={() => isBatch ? void resolveBatch() : void resolveSingle()}><RotateCcw size={12} /> Try again</button>
@@ -324,7 +349,7 @@ export default function Downloader({ onToast, compact = false }: DownloaderProps
         {!isBatch && isResolving && (
           <motion.div key="loading" className="dl-skeleton" role="status" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <div className="dl-skeleton-preview"><LoaderCircle className="dl-spin" size={25} /></div>
-            <div className="dl-skeleton-body"><span /><span /><span /><p>Checking your link and reading the original file…</p></div>
+            <div className="dl-skeleton-body"><span /><span /><span /><p>{slowResolve ? 'Still checking this source. Public pages can take up to a minute; you can cancel at any time.' : 'Checking your link and finding available media…'}</p></div>
           </motion.div>
         )}
         {!isBatch && result && !isResolving && (
@@ -342,7 +367,7 @@ export default function Downloader({ onToast, compact = false }: DownloaderProps
           ) : (
             <div key={item.key} className={`dl-batch-item${item.status === 'error' ? ' has-error' : ''}`}>
               {item.status === 'error' ? <CircleAlert size={17} /> : item.status === 'resolving' ? <LoaderCircle className="dl-spin" size={17} /> : <Link2 size={17} />}
-              <div><span className="dl-batch-url" title={item.url}>{item.url}</span><p>{item.error || (item.status === 'resolving' ? 'Checking source…' : item.status === 'cancelled' ? 'Cancelled. Submit your batch again to retry.' : 'Waiting for the previous link…')}</p></div>
+              <div><span className="dl-batch-url" title={item.url}>{item.url}</span><p>{item.error || (item.status === 'resolving' ? 'Checking source… Public pages may take up to a minute.' : item.status === 'cancelled' ? 'Cancelled. Submit your batch again to retry.' : 'Waiting for the previous link…')}</p></div>
             </div>
           ))}
         </div>

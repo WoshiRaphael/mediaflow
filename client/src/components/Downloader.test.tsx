@@ -27,6 +27,28 @@ afterEach(() => {
 });
 
 describe('downloader interaction', () => {
+  it('downloads the chosen returned format and clearly marks a video-only stream', async () => {
+    resolveMock.mockResolvedValue({
+      ...sample, platform: 'youtube', title: 'A public creator video',
+      formats: [
+        { id: 'combined-720', label: '720p MP4', extension: 'mp4', mimeType: 'video/mp4', hasAudio: true },
+        { id: 'video-1080', label: '1080p WebM', extension: 'webm', mimeType: 'video/webm', hasAudio: false },
+      ],
+    });
+    vi.mocked(downloadMedia).mockResolvedValue('creator-video.webm');
+    render(<Downloader />);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'https://www.youtube.com/watch?v=public-example' } });
+    fireEvent.submit(screen.getByRole('form', { name: 'Media downloader' }));
+    expect(await screen.findByRole('heading', { name: 'A public creator video' })).toBeTruthy();
+    expect(screen.getByText('YouTube')).toBeTruthy();
+    expect(screen.getByText('2 available formats')).toBeTruthy();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Available formats' }), { target: { value: 'video-1080' } });
+    expect(screen.getByText('Video only · this format has no audio track.')).toBeTruthy();
+    expect(screen.getByLabelText('Video preview: A public creator video').getAttribute('src')).toContain('format=video-1080');
+    fireEvent.click(screen.getByRole('button', { name: 'Download WEBM' }));
+    await waitFor(() => expect(downloadMedia).toHaveBeenCalledWith(expect.objectContaining({ platform: 'youtube' }), expect.objectContaining({ id: 'video-1080', hasAudio: false }), expect.any(AbortSignal), expect.any(Function)));
+  });
+
   it('guides an empty submission without contacting the media service', async () => {
     render(<Downloader />);
     fireEvent.submit(screen.getByRole('form', { name: 'Media downloader' }));
