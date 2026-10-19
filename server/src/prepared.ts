@@ -34,14 +34,19 @@ function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 
 /** Only local, signature-checked containers reach ffmpeg. Each input is forced
  * to the appropriate demuxer, and remote/manifest protocols are unavailable. */
-export function offlineFfmpegArgs(inputs: { path: string; container: 'mp4' | 'webm' }[], output?: string, maxBytes?: number): string[] {
+export function offlineFfmpegArgs(inputs: { path: string; container: 'mp4' | 'webm' }[], output?: string, maxBytes?: number, includeAudio?: boolean): string[] {
   const args = ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y'];
   for (const input of inputs) {
     args.push('-protocol_whitelist', 'file,pipe', '-f', input.container === 'mp4' ? 'mov' : 'matroska');
     if (input.container === 'mp4') args.push('-enable_drefs', '0', '-use_absolute_path', '0');
     args.push('-i', input.path);
   }
-  args.push('-map', '0:v:0', '-map', inputs.length === 2 ? '1:a:0' : '0:a:0', '-c', 'copy');
+  const audio = arguments.length < 4 ? true : includeAudio;
+  args.push('-map', '0:v:0');
+  if (audio === true) args.push('-map', inputs.length === 2 ? '1:a:0' : '0:a:0');
+  else if (audio === undefined) args.push('-map', '0:a:0?');
+  else args.push('-an');
+  args.push('-c', 'copy');
   if (!output) args.push('-f', 'null', '-');
   else {
     if (maxBytes) args.push('-fs', String(maxBytes));
@@ -193,7 +198,7 @@ export class PreparedMediaStore {
     let cached = false;
     try {
       signal.throwIfAborted();
-      if (!plan.hasAudio || ![1, 2].includes(plan.sources.length) || Boolean(plan.needsMerge) !== (plan.sources.length === 2)) throw new ApiError(422, 'INVALID_PLAN', 'This source does not provide a complete video with audio.');
+      if (![1, 2].includes(plan.sources.length) || Boolean(plan.needsMerge) !== (plan.sources.length === 2) || (plan.sources.length === 2 && plan.hasAudio !== true)) throw new ApiError(422, 'INVALID_PLAN', 'The selected video has an invalid audio/video preparation plan.');
       directory = await mkdtemp(join(this.temporaryRoot, 'mediaflow-'));
       const paths: { path: string; container: 'mp4' | 'webm' }[] = [];
       const total = { bytes: 0 };
@@ -205,11 +210,11 @@ export class PreparedMediaStore {
       }
       let output = join(directory, `prepared.${plan.extension}`);
       if (plan.needsMerge) {
-        await ffmpeg(this.config, offlineFfmpegArgs(paths, output, this.config.maxFileBytes), directory, signal);
+        await ffmpeg(this.config, offlineFfmpegArgs(paths, output, this.config.maxFileBytes, plan.hasAudio), directory, signal);
       } else {
-        // Verify both streams exist locally. Codec copy to a null muxer adds no
-        // transcoding and prevents a mislabeled video-only file being served.
-        await ffmpeg(this.config, offlineFfmpegArgs(paths), directory, signal);
+        // Always verify video. Require audio only when metadata promises it;
+        // unknown progressive sources retain any audio that actually exists.
+        await ffmpeg(this.config, offlineFfmpegArgs(paths, undefined, undefined, plan.hasAudio), directory, signal);
         // Keep the original private path. No filesystem move or byte copy is
         // needed; the public filename comes from Content-Disposition.
         output = paths[0].path;

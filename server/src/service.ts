@@ -2,7 +2,7 @@ import type { Config } from './config.js';
 import { checkDeclaredSize, openMedia, type TransportDependencies } from './upstream.js';
 import { detectMedia, mediaTitle, readPrefix, validateDeclaredMime } from './media.js';
 import { MediaRegistry } from './registry.js';
-import { extractVideoPage, type ExtractedVideo } from './extractor.js';
+import { cancelExtractions, extractVideoPage, type ExtractedVideo } from './extractor.js';
 import { ApiError } from './errors.js';
 import { findPlatform } from './platforms.js';
 import { validateUrl } from './security.js';
@@ -15,12 +15,15 @@ export interface MediaServiceDependencies extends TransportDependencies {
 export function createMediaService(config: Config, dependencies: MediaServiceDependencies = {}) {
   const registry = new MediaRegistry(config.mediaTtlSeconds);
   const prepared = new PreparedMediaStore(config, dependencies);
+  let disposed = false;
   const resolvePage = async (input: string, signal?: AbortSignal) => {
+    if (disposed) throw new ApiError(503, 'SERVER_SHUTTING_DOWN', 'The server is restarting. Please retry in a moment.');
     if (!config.extractorEnabled) throw new ApiError(422, 'EXTRACTOR_DISABLED', 'Video-page downloads are disabled on this server. Direct photo and video files still work.');
     const video = await (dependencies.extract ?? extractVideoPage)(input, config, signal);
     signal?.throwIfAborted();
-    const formats = video.formats.filter(format => format.hasAudio && ['mp4', 'webm'].includes(format.extension) && [1, 2].includes(format.sources.length));
-    if (!formats.length) throw new ApiError(422, 'NO_COMPLETE_VIDEO', 'This page did not provide an accessible video with audio. Try a different public video link.');
+    if (disposed) throw new ApiError(503, 'SERVER_SHUTTING_DOWN', 'The server is restarting. Please retry in a moment.');
+    const formats = video.formats.filter(format => ['mp4', 'webm'].includes(format.extension) && [1, 2].includes(format.sources.length));
+    if (!formats.length) throw new ApiError(422, 'NO_COMPLETE_VIDEO', 'This page did not provide an accessible video. Try a different public video link.');
     const first = formats[0];
     const record = registry.create({ url: input, title: video.title.slice(0, 200), platform: video.platform, formats, media: { kind: 'video', extension: first.extension, mimeType: first.mimeType } });
     return {
@@ -33,6 +36,7 @@ export function createMediaService(config: Config, dependencies: MediaServiceDep
   return {
     registry,
     async resolve(input: string, signal?: AbortSignal) {
+      if (disposed) throw new ApiError(503, 'SERVER_SHUTTING_DOWN', 'The server is restarting. Please retry in a moment.');
       const inputUrl = validateUrl(input, config);
       const staticExtension = /\.(?:jpe?g|png|webp|gif|mp4|webm)$/i.test(inputUrl.pathname);
       if (findPlatform(inputUrl.hostname) && !staticExtension) return resolvePage(inputUrl.href, signal);
@@ -59,10 +63,11 @@ export function createMediaService(config: Config, dependencies: MediaServiceDep
     },
     open: (url: string, range?: string, signal?: AbortSignal) => openMedia(url, config, range, dependencies, signal),
     prepare: (record: ReturnType<MediaRegistry['get']>, formatId: string, signal?: AbortSignal) => {
+      if (disposed) throw new ApiError(503, 'SERVER_SHUTTING_DOWN', 'The server is restarting. Please retry in a moment.');
       const plan = record.formats?.find(format => format.id === formatId);
       if (!plan) throw new ApiError(400, 'INVALID_FORMAT', 'Choose one of the available qualities for this video.');
       return prepared.acquire(record, plan, signal);
     },
-    dispose: () => prepared.dispose(),
+    dispose: async () => { disposed = true; await Promise.all([cancelExtractions(), prepared.dispose()]); },
   };
 }

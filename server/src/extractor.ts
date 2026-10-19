@@ -11,7 +11,7 @@ import { findPlatform } from './platforms.js';
 export interface ExtractedSource { url: string; headers?: Record<string, string> }
 export interface ExtractedFormat {
   id: string; label: string; extension: 'mp4' | 'webm'; mimeType: string;
-  size?: number; width?: number; height?: number; hasAudio: true;
+  size?: number; width?: number; height?: number; hasAudio?: boolean;
   videoCodec?: string; audioCodec?: string; sources: ExtractedSource[]; needsMerge?: boolean;
 }
 export interface ExtractedVideo { title: string; platform: string; duration?: number; formats: ExtractedFormat[] }
@@ -62,12 +62,15 @@ export function parseExtractedVideo(value: unknown, input: string, maximumBytes:
   });
   const audio = candidates.filter(f => f.vcodec === 'none' && text(f.acodec) && f.acodec !== 'none');
   // Some progressive/HTML5 sources omit codec metadata. The local preparation
-  // step verifies both streams with FFmpeg before serving any bytes. Explicit
-  // video-only tracks still require a separately identified audio track.
+  // step verifies streams with FFmpeg before serving any bytes. An explicit
+  // silent source remains usable and is labeled video only when no compatible
+  // audio track is available. Missing metadata remains unknown.
   const hasVideo = (f: Data) => f.vcodec !== 'none';
   const hasAudio = (f: Data) => f.acodec !== 'none';
+  const audioState = (f: Data): boolean | undefined => f.acodec === 'none' ? false : text(f.acodec) ? true : undefined;
+  const audioRank = (f: Data) => audioState(f) === true ? 2 : audioState(f) === undefined ? 1 : 0;
   const ranked = candidates.filter(f => hasVideo(f) && ['mp4', 'webm'].includes(text(f.ext))).sort((a, b) =>
-    (positive(b.height) ?? 0) - (positive(a.height) ?? 0) || (hasAudio(b) ? 1 : 0) - (hasAudio(a) ? 1 : 0) || (positive(b.tbr) ?? 0) - (positive(a.tbr) ?? 0));
+    (positive(b.height) ?? 0) - (positive(a.height) ?? 0) || audioRank(b) - audioRank(a) || (positive(b.tbr) ?? 0) - (positive(a.tbr) ?? 0));
   const formats: ExtractedFormat[] = [];
   const seen = new Set<string>();
   for (const video of ranked) {
@@ -80,16 +83,16 @@ export function parseExtractedVideo(value: unknown, input: string, maximumBytes:
     if (!hasAudio(video)) {
       audioTrack = audio.filter(a => extension === 'mp4' ? ['m4a', 'mp4'].includes(text(a.ext)) && /^(mp4a|aac)/.test(text(a.acodec)) : text(a.ext) === 'webm')
         .sort((a, b) => (positive(b.abr) ?? 0) - (positive(a.abr) ?? 0))[0];
-      if (!audioTrack) continue;
     }
+    const includesAudio = audioTrack ? true : audioState(video);
     const videoSize = positive(video.filesize), audioSize = audioTrack ? positive(audioTrack.filesize) : undefined;
     const size = videoSize && (!audioTrack || audioSize) ? videoSize + (audioSize || 0) : undefined;
     if (size && size > maximumBytes) continue;
     const source = (format: Data): ExtractedSource => ({ url: sourceUrl(format.url)!, headers: headers(format.http_headers) || headers(data.http_headers) });
     const quality = height ? `${height}p` : text(video.format_note).slice(0, 30) || 'Original';
     formats.push({
-      id: `video-${formats.length + 1}`, label: `${quality} · ${extension.toUpperCase()}${text(video.acodec) || audioTrack ? ' · video + audio' : ''}`, extension,
-      mimeType: extension === 'mp4' ? 'video/mp4' : 'video/webm', hasAudio: true,
+      id: `video-${formats.length + 1}`, label: `${quality} · ${extension.toUpperCase()}${includesAudio === true ? ' · video + audio' : includesAudio === false ? ' · video only' : ''}`, extension,
+      mimeType: extension === 'mp4' ? 'video/mp4' : 'video/webm', ...(includesAudio !== undefined ? { hasAudio: includesAudio } : {}),
       ...(size ? { size } : {}), ...(height ? { height } : {}), ...(positive(video.width) ? { width: positive(video.width) } : {}),
       ...(text(video.vcodec) ? { videoCodec: text(video.vcodec).slice(0, 60) } : {}),
       ...(text(audioTrack?.acodec || video.acodec) ? { audioCodec: text(audioTrack?.acodec || video.acodec).slice(0, 60) } : {}),
@@ -98,9 +101,9 @@ export function parseExtractedVideo(value: unknown, input: string, maximumBytes:
     seen.add(key);
     if (formats.length >= 8) break;
   }
-  if (!formats.length) throw new ApiError(422, 'NO_DOWNLOADABLE_FORMAT', 'This source did not provide an accessible MP4 or WebM video with audio within the file-size limit. It may be protected, unavailable, or only offer unsupported streams.');
+  if (!formats.length) throw new ApiError(422, 'NO_DOWNLOADABLE_FORMAT', 'This source did not provide an accessible MP4 or WebM video within the file-size limit. It may be protected, unavailable, or only offer unsupported streams.');
   // A combined file avoids preparing separate tracks just to show a preview.
-  const firstCombined = formats.findIndex(f => !f.needsMerge && (!f.height || f.height <= 1080));
+  const firstCombined = formats.findIndex(f => f.hasAudio !== false && !f.needsMerge && (!f.height || f.height <= 1080));
   if (firstCombined > 0) formats.unshift(...formats.splice(firstCombined, 1));
   const platform = findPlatform(new URL(input).hostname)?.id || text(data.extractor_key || data.extractor).replace(/[^a-z0-9_-]/gi, '').toLowerCase().slice(0, 40) || 'website';
   return { title: (text(data.title) || 'Your video').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 180), platform, ...(positive(data.duration) ? { duration: positive(data.duration) } : {}), formats };
@@ -191,10 +194,19 @@ async function runExtraction(input: string, config: Config, signal?: AbortSignal
 }
 
 let activeExtractions = 0;
+const extractionJobs = new Map<AbortController, Promise<ExtractedVideo>>();
+export async function cancelExtractions(): Promise<void> {
+  for (const controller of extractionJobs.keys()) controller.abort(new DOMException('Server is shutting down', 'AbortError'));
+  await Promise.allSettled([...extractionJobs.values()]);
+}
 export async function extractVideoPage(input: string, config: Config, signal?: AbortSignal): Promise<ExtractedVideo> {
   signal?.throwIfAborted();
   if (activeExtractions >= 2) throw new ApiError(503, 'RESOLVER_BUSY', 'Two video links are already being checked. Please try again in a moment.');
   activeExtractions++;
-  try { return await runExtraction(input, config, signal); }
-  finally { activeExtractions--; }
+  const controller = new AbortController();
+  const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  const promise = runExtraction(input, config, combined);
+  extractionJobs.set(controller, promise);
+  try { return await promise; }
+  finally { extractionJobs.delete(controller); activeExtractions--; }
 }
