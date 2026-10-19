@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  downloadMedia, MAX_DOWNLOAD_BYTES, resolveMedia, validateMediaUrl,
+  downloadMedia, MAX_DOWNLOAD_BYTES, RESOLVE_TIMEOUT_MS, resolveMedia, validateMediaUrl,
   type ResolvedMedia,
 } from './api';
 
@@ -41,6 +41,26 @@ describe('media input boundaries', () => {
 });
 
 describe('resolver failures', () => {
+  it('preserves actual source format identifiers and optional audio metadata', async () => {
+    const formats = [
+      { id: 'http-720p', label: '720p MP4', extension: 'mp4', mimeType: 'video/mp4', width: 1280, height: 720, hasAudio: true },
+      { id: '137', label: '1080p MP4', extension: 'mp4', mimeType: 'video/mp4', width: 1920, height: 1080, hasAudio: false },
+    ];
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ ...media, platform: 'youtube', formats }), { headers: { 'Content-Type': 'application/json' } }));
+    await expect(resolveMedia('https://www.youtube.com/watch?v=public-example')).resolves.toMatchObject({ platform: 'youtube', formats });
+  });
+
+  it('ends an unresponsive public-page request with a source-specific timeout', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation((_, options) => new Promise((_, reject) => {
+      options?.signal?.addEventListener('abort', () => reject(new DOMException('Cancelled', 'AbortError')), { once: true });
+    }));
+    const resolving = resolveMedia(source);
+    const rejected = expect(resolving).rejects.toMatchObject({ code: 'RESOLVE_TIMEOUT', message: expect.stringContaining('Some platforms limit automated access') });
+    await vi.advanceTimersByTimeAsync(RESOLVE_TIMEOUT_MS);
+    await rejected;
+  });
+
   it('shows an actionable platform restriction supplied by the backend', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: { code: 'PLATFORM_RESTRICTED', message: 'This platform requires an authorized API integration.' } }), { status: 422, headers: { 'Content-Type': 'application/json' } }));
     await expect(resolveMedia(source)).rejects.toMatchObject({ code: 'PLATFORM_RESTRICTED', status: 422, message: 'This platform requires an authorized API integration.' });

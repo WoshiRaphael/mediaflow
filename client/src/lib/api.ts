@@ -8,6 +8,9 @@ export interface MediaFormat {
   size?: number;
   width?: number;
   height?: number;
+  hasAudio?: boolean;
+  videoCodec?: string;
+  audioCodec?: string;
 }
 
 export interface ResolvedMedia {
@@ -32,6 +35,7 @@ const environment = (import.meta as ImportMeta & {
 // The API is a separately deployed service in production. Never put credentials here.
 const API_BASE_URL = (environment?.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
 export const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
+export const RESOLVE_TIMEOUT_MS = 75_000;
 
 export class ApiError extends Error {
   constructor(message: string, public readonly code: string, public readonly status?: number) {
@@ -55,7 +59,7 @@ export function validateMediaUrl(value: string): string {
   if (url.username || url.password) {
     throw new ApiError('Links containing sign-in details are not supported.', 'INVALID_URL');
   }
-  if (trimmed.length > 2048) throw new ApiError('That link is too long. Please use the direct media URL.', 'INVALID_URL');
+  if (trimmed.length > 2048) throw new ApiError('That link is too long. Use a shorter public page or media link.', 'INVALID_URL');
   return url.href;
 }
 
@@ -88,12 +92,18 @@ function connectionError(error: unknown): never {
 
 export async function resolveMedia(value: string, signal?: AbortSignal): Promise<ResolvedMedia> {
   const url = validateMediaUrl(value);
+  if (signal?.aborted) throw new DOMException('Request cancelled', 'AbortError');
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
+  let timedOut = false;
+  const timeout = window.setTimeout(() => { timedOut = true; controller.abort(); }, RESOLVE_TIMEOUT_MS);
   try {
     const response = await fetch(`${API_BASE_URL}/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
-      signal,
+      signal: controller.signal,
       credentials: 'omit',
       cache: 'no-store',
       redirect: 'error',
@@ -105,7 +115,11 @@ export async function resolveMedia(value: string, signal?: AbortSignal): Promise
     }
     return result;
   } catch (error) {
+    if (timedOut) throw new ApiError('This source took too long to respond. Try again, or choose another public link. Some platforms limit automated access.', 'RESOLVE_TIMEOUT');
     return connectionError(error);
+  } finally {
+    window.clearTimeout(timeout);
+    signal?.removeEventListener('abort', onAbort);
   }
 }
 
