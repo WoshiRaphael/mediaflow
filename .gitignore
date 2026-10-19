@@ -13,4 +13,6 @@ Thumbs.db
 work/
 playwright-report/
 test-results/
+server/.bin/
+server/.media-cache/
 
