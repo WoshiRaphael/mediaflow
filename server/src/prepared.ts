@@ -1,10 +1,8 @@
 import { spawn } from 'node:child_process';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import { mkdtemp, open, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Transform } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 import type { Config } from './config.js';
 import { ApiError } from './errors.js';
 import type { ExtractedFormat } from './extractor.js';
@@ -124,23 +122,63 @@ export class PreparedMediaStore {
   }
 
   private async download(source: ExtractedFormat['sources'][number], path: string, total: { bytes: number }, signal: AbortSignal): Promise<'mp4' | 'webm'> {
-    const { response } = await openMedia(source.url, { ...this.config, requestTimeoutMs: this.config.downloadTimeoutMs }, undefined, this.transport, signal, source.headers);
     const prefix: Buffer[] = [];
     let prefixLength = 0;
+    const file = await open(path, 'wx', 0o600);
+    let offset = 0;
+    let expectedTotal: number | undefined;
+    const chunkSize = 1024 * 1024;
     try {
-      const declared = checkDeclaredSize(response, this.config.maxFileBytes);
-      if (declared !== undefined && total.bytes + declared > this.config.maxFileBytes) throw new ApiError(413, 'FILE_TOO_LARGE', 'The selected audio and video exceed the file-size limit.');
-      const mime = response.headers['content-type']?.split(';')[0].trim().toLowerCase();
-      if (mime && !['video/mp4', 'audio/mp4', 'audio/x-m4a', 'video/webm', 'audio/webm', 'application/octet-stream', 'binary/octet-stream'].includes(mime)) throw new ApiError(422, 'UNSUPPORTED_TRACK', 'The source did not provide an MP4 or WebM media track.');
-      const meter = new Transform({ transform: (chunk: Buffer, _encoding, callback) => {
-        total.bytes += chunk.length;
-        if (total.bytes > this.config.maxFileBytes) { callback(new ApiError(413, 'FILE_TOO_LARGE', 'The selected audio and video exceed the file-size limit.')); return; }
-        if (prefixLength < 65536) { const part = chunk.subarray(0, 65536 - prefixLength); prefix.push(part); prefixLength += part.length; }
-        callback(null, chunk);
-      } });
-      await pipeline(response.body, meter, createWriteStream(path, { flags: 'wx', mode: 0o600 }), { signal });
-      return detectTrackContainer(Buffer.concat(prefix, prefixLength));
-    } finally { response.destroy(); }
+      // Standard bounded ranges also work with CDNs that stall unrestricted
+      // GETs. Each new range repeats URL, redirect and pinned-DNS validation.
+      for (let requestIndex = 0; requestIndex < 128; requestIndex++) {
+        signal.throwIfAborted();
+        const requestedEnd = Math.min(offset + chunkSize - 1, (expectedTotal ?? this.config.maxFileBytes) - 1);
+        const { response } = await openMedia(source.url, { ...this.config, requestTimeoutMs: this.config.downloadTimeoutMs }, `bytes=${offset}-${requestedEnd}`, this.transport, signal, source.headers);
+        try {
+          const declared = checkDeclaredSize(response, this.config.maxFileBytes);
+          const bytesBeforeSource = total.bytes - offset;
+          if (declared !== undefined && bytesBeforeSource + declared > this.config.maxFileBytes) throw new ApiError(413, 'FILE_TOO_LARGE', 'The selected audio and video exceed the file-size limit.');
+          const mime = response.headers['content-type']?.split(';')[0].trim().toLowerCase();
+          if (mime && !['video/mp4', 'audio/mp4', 'audio/x-m4a', 'video/webm', 'audio/webm', 'application/octet-stream', 'binary/octet-stream'].includes(mime)) throw new ApiError(422, 'UNSUPPORTED_TRACK', 'The source did not provide an MP4 or WebM media track.');
+          let partEnd: number | undefined;
+          let partExpected: number | undefined;
+          if (response.statusCode === 206) {
+            const range = response.headers['content-range'];
+            const match = typeof range === 'string' ? /^bytes (\d+)-(\d+)\/(\d+)$/.exec(range) : null;
+            if (!match) throw new ApiError(502, 'INVALID_SOURCE_RANGE', 'The source returned an invalid media range.');
+            const start = Number(match[1]), end = Number(match[2]), size = Number(match[3]);
+            if (![start, end, size].every(Number.isSafeInteger) || start !== offset || end < start || end > requestedEnd || end >= size || (expectedTotal !== undefined && size !== expectedTotal)) throw new ApiError(502, 'INVALID_SOURCE_RANGE', 'The source returned overlapping or inconsistent media ranges.');
+            expectedTotal = size;
+            partEnd = end;
+            partExpected = end - start + 1;
+          } else {
+            if (offset !== 0) throw new ApiError(502, 'INVALID_SOURCE_RANGE', 'The source stopped honoring media ranges. Please retry.');
+            partExpected = declared;
+          }
+          let received = 0;
+          for await (const value of response.body) {
+            signal.throwIfAborted();
+            const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+            received += chunk.length;
+            total.bytes += chunk.length;
+            if (total.bytes > this.config.maxFileBytes) throw new ApiError(413, 'FILE_TOO_LARGE', 'The selected audio and video exceed the file-size limit.');
+            if (partExpected !== undefined && received > partExpected) throw new ApiError(502, 'INVALID_SOURCE_RANGE', 'The source sent more bytes than its declared range.');
+            if (prefixLength < 65536) { const part = chunk.subarray(0, 65536 - prefixLength); prefix.push(part); prefixLength += part.length; }
+            let written = 0;
+            while (written < chunk.length) {
+              const result = await file.write(chunk, written, chunk.length - written);
+              if (!result.bytesWritten) throw new ApiError(503, 'STORAGE_FAILED', 'The video could not be written to temporary storage.');
+              written += result.bytesWritten;
+            }
+          }
+          if (partExpected !== undefined && received !== partExpected) throw new ApiError(502, 'INCOMPLETE_SOURCE', 'The source ended before the complete media range arrived.');
+          if (partEnd === undefined || partEnd + 1 === expectedTotal) return detectTrackContainer(Buffer.concat(prefix, prefixLength));
+          offset = partEnd + 1;
+        } finally { response.destroy(); }
+      }
+      throw new ApiError(422, 'SOURCE_TOO_FRAGMENTED', 'The source split this file into too many ranges. Try another quality.');
+    } finally { await file.close(); }
   }
 
   private async run(key: string, record: MediaRecord, plan: ExtractedFormat, signal: AbortSignal): Promise<PreparedFile> {
